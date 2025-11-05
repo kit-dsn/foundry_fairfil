@@ -1,0 +1,136 @@
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     uint256 Variablemixedcase;
+   |             ^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     uint256 VARIABLE_MIXED_CASE;
+   |             ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     uint256 VariableMixedCase;
+   |             ^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |         uint256 testVAL;
+   |                 ^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |         uint256 TestVal;
+   |                 ^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-variable]: mutable variables should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |         uint256 TESTVAL;
+   |                 ^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-variable
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function Functionmixedcase() public {}
+   |              ^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function FUNCTION_MIXED_CASE() public {}
+   |              ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function FunctionMixedCase() public {}
+   |              ^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function function_mixed_case() public {}
+   |              ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function invariantBalance_MixedCase_Enabled() public {}
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function invariantbalance_mixedcase_enabled() public {}
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function ERC20_DoSomething() public {} // invalid because of the underscore
+   |              ^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function HAS_PARAMS(address addr) external view returns (uint256) {}
+   |              ^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function HAS_NO_RETURN() external view {}
+   |              ^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function HAS_MORE_THAN_ONE_RETURN() external view returns (uint256, uint256) {}
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
+note[mixed-case-function]: function names should use mixedCase
+  --> ROOT/testdata/MixedCase.sol:LL:CC
+   |
+LL |     function NOT_ELEMENTARY_RETURN() external view returns (uint256[] memory) {}
+   |              ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: https://book.getfoundry.sh/reference/forge/forge-lint#mixed-case-function
+
