@@ -7,6 +7,7 @@ use alloy_primitives::{
 use anvil_core::eth::transaction::{PendingTransaction, TypedTransaction};
 use parking_lot::RwLock;
 use std::{cmp::Ordering, collections::BTreeSet, fmt, str::FromStr, sync::Arc, time::Instant};
+use serde::Serialize;
 
 /// A unique identifying marker for a transaction
 pub type TxMarker = Vec<u8>;
@@ -62,11 +63,11 @@ impl FromStr for TransactionOrder {
 ///
 /// The `TransactionPriority` determines the ordering of two transactions that have all their
 /// markers satisfied.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct TransactionPriority(pub u128);
 
 /// Internal Transaction type
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct PoolTransaction {
     /// the pending eth transaction
     pub pending_transaction: PendingTransaction,

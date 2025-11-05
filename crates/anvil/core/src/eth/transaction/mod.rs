@@ -359,7 +359,7 @@ pub fn to_alloy_transaction_with_hash_and_sender(
 }
 
 /// Queued transaction
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PendingTransaction {
     /// The actual transaction
     pub transaction: MaybeImpersonatedTransaction,

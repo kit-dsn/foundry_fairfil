@@ -74,7 +74,7 @@ impl Future for NodeService {
             while let Poll::Ready(Some(outcome)) = pin.block_producer.poll_next_unpin(cx) {
                 trace!(target: "node", "mined block {}", outcome.block_number);
                 // prune the transactions from the pool
-                pin.pool.on_mined_block(outcome);
+                pin.pool.on_mined_block(&outcome);
             }
 
             if let Poll::Ready(transactions) = pin.miner.poll(&pin.pool, cx) {

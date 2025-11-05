@@ -218,13 +218,13 @@ pub enum FeeHistoryError {
     BlockNotFound(BlockNumberOrTag),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ErrDetail {
     pub detail: String,
 }
 
 /// An error due to invalid transaction
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Serialize)]
 pub enum InvalidTransactionError {
     /// returned if the nonce of a transaction is lower than the one present in the local chain.
     #[error("nonce too low")]
@@ -299,6 +299,7 @@ pub enum InvalidTransactionError {
     TooManyBlobs(usize, usize),
     /// Thrown when there's a blob validation error
     #[error(transparent)]
+    #[serde(skip)]
     BlobTransactionValidationError(#[from] alloy_consensus::BlobTransactionValidationError),
     /// Thrown when Blob transaction is a create transaction. `to` must be present.
     #[error("Blob transaction can't be a create transaction. `to` must be present.")]

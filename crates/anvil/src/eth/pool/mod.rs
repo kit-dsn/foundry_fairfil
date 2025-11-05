@@ -83,15 +83,15 @@ impl Pool {
     /// Invoked when a set of transactions ([Self::ready_transactions()]) was executed.
     ///
     /// This will remove the transactions from the pool.
-    pub fn on_mined_block(&self, outcome: MinedBlockOutcome) -> PruneResult {
-        let MinedBlockOutcome { block_number, included, invalid } = outcome;
+    pub fn on_mined_block(&self, outcome: &MinedBlockOutcome) -> PruneResult {
+        let MinedBlockOutcome { block_number, included, invalid, .. } = outcome;
 
         // remove invalid transactions from the pool
         self.remove_invalid(invalid.into_iter().map(|tx| tx.hash()).collect());
 
         // prune all the markers the mined transactions provide
         let res = self
-            .prune_markers(block_number, included.into_iter().flat_map(|tx| tx.provides.clone()));
+            .prune_markers(block_number.clone(), included.into_iter().flat_map(|tx| tx.provides.clone()));
         trace!(target: "txpool", "pruned transaction markers {:?}", res);
         res
     }
@@ -120,6 +120,16 @@ impl Pool {
             }
         }
         Ok(added)
+    }
+
+    /// Adds a ready transaction to the pool
+    pub fn add_ready_transaction(&self, tx: PoolTransaction) -> Result<TxHash, PoolError> {
+        let mut inner_pool = self.inner.write();
+        let pending_pool_tx = PendingPoolTransaction::new(tx, inner_pool.ready_transactions.provided_markers());
+        let hash = pending_pool_tx.transaction.hash();
+        inner_pool.ready_transactions.add_transaction(pending_pool_tx)?;
+
+        Ok(hash)
     }
 
     /// Adds a new transaction listener to the pool that gets notified about every new ready

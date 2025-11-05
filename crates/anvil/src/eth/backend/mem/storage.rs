@@ -34,6 +34,8 @@ use foundry_evm::{
 use parking_lot::RwLock;
 use revm::{context::Block as RevmBlock, primitives::hardfork::SpecId};
 use std::{collections::VecDeque, fmt, path::PathBuf, sync::Arc, time::Duration};
+use serde::Serialize;
+use crate::eth::backend::executor::TransactionExecutionOutcome;
 // use yansi::Paint;
 
 // === various limits in number of blocks ===
@@ -493,7 +495,7 @@ impl Blockchain {
 }
 
 /// Represents the outcome of mining a new block
-#[derive(Clone, Debug)]
+#[derive(Debug, Serialize)]
 pub struct MinedBlockOutcome {
     /// The block that was mined
     pub block_number: u64,
@@ -502,6 +504,8 @@ pub struct MinedBlockOutcome {
     /// All transactions that were attempted to be included but were invalid at the time of
     /// execution
     pub invalid: Vec<Arc<PoolTransaction>>,
+    /// Outcomes of all transactions that were not included into the block
+    pub failed_outcomes: Vec<TransactionExecutionOutcome>,
 }
 
 /// Container type for a mined transaction

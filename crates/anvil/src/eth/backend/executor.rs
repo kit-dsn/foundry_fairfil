@@ -47,9 +47,10 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 use std::{fmt::Debug, sync::Arc};
+use serde::Serialize;
 
 /// Represents an executed transaction (transacted on the DB)
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExecutedTransaction {
     transaction: Arc<PoolTransaction>,
     exit_reason: InstructionResult,
@@ -98,7 +99,7 @@ impl ExecutedTransaction {
 }
 
 /// Represents the outcome of mining a new block
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ExecutedTransactions {
     /// The block created after executing the `included` transactions
     pub block: BlockInfo,
@@ -107,6 +108,8 @@ pub struct ExecutedTransactions {
     /// All transactions that were invalid at the point of their execution and were not included in
     /// the block
     pub invalid: Vec<Arc<PoolTransaction>>,
+    /// Outcomes of all transactions that failed and were not included in the block
+    pub failed_outcomes: Vec<TransactionExecutionOutcome>,
 }
 
 /// An executor for a series of transactions
@@ -146,6 +149,7 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
         let mut bloom = Bloom::default();
         let mut cumulative_gas_used = 0u64;
         let mut invalid = Vec::new();
+        let mut failed_outcomes = Vec::new();
         let mut included = Vec::new();
         let gas_limit = self.block_env.gas_limit;
         let parent_hash = self.parent_hash;
@@ -174,25 +178,30 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
                 }
                 TransactionExecutionOutcome::BlockGasExhausted(tx) => {
                     trace!(target: "backend",  tx_gas_limit = %tx.pending_transaction.transaction.gas_limit(), ?tx,  "block gas limit exhausting, skipping transaction");
+                    failed_outcomes.push(TransactionExecutionOutcome::BlockGasExhausted(tx.clone()));
                     continue;
                 }
                 TransactionExecutionOutcome::BlobGasExhausted(tx) => {
                     trace!(target: "backend",  blob_gas = %tx.pending_transaction.transaction.blob_gas().unwrap_or_default(), ?tx,  "block blob gas limit exhausting, skipping transaction");
+                    failed_outcomes.push(TransactionExecutionOutcome::BlobGasExhausted(tx.clone()));
                     continue;
                 }
                 TransactionExecutionOutcome::TransactionGasExhausted(tx) => {
                     trace!(target: "backend",  tx_gas_limit = %tx.pending_transaction.transaction.gas_limit(), ?tx,  "transaction gas limit exhausting, skipping transaction");
+                    failed_outcomes.push(TransactionExecutionOutcome::TransactionGasExhausted(tx.clone()));
                     continue;
                 }
-                TransactionExecutionOutcome::Invalid(tx, _) => {
+                TransactionExecutionOutcome::Invalid(tx, reason) => {
                     trace!(target: "backend", ?tx,  "skipping invalid transaction");
-                    invalid.push(tx);
+                    invalid.push(tx.clone());
+                    failed_outcomes.push(TransactionExecutionOutcome::Invalid(tx.clone(), reason));
                     continue;
                 }
-                TransactionExecutionOutcome::DatabaseError(_, err) => {
+                TransactionExecutionOutcome::DatabaseError(tx, err) => {
                     // Note: this is only possible in forking mode, if for example a rpc request
                     // failed
                     trace!(target: "backend", ?err,  "Failed to execute transaction due to database error");
+                    failed_outcomes.push(TransactionExecutionOutcome::DatabaseError(tx, err));
                     continue;
                 }
             };
@@ -266,7 +275,7 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
 
         let block = Block::new(partial_header, transactions.clone());
         let block = BlockInfo { block, transactions: transaction_infos, receipts };
-        ExecutedTransactions { block, included, invalid }
+        ExecutedTransactions { block, included, invalid, failed_outcomes }
     }
 
     fn env_for(&self, tx: &PendingTransaction) -> Env {
@@ -281,7 +290,7 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
 }
 
 /// Represents the result of a single transaction execution attempt
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum TransactionExecutionOutcome {
     /// Transaction successfully executed
     Executed(ExecutedTransaction),
@@ -294,6 +303,7 @@ pub enum TransactionExecutionOutcome {
     /// Execution skipped because it exceeded the transaction gas limit
     TransactionGasExhausted(Arc<PoolTransaction>),
     /// When an error occurred during execution
+    #[serde(skip)]
     DatabaseError(Arc<PoolTransaction>, DatabaseError),
 }
 

@@ -99,6 +99,8 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
     try_join,
 };
+use crate::eth::backend::mem::storage::MinedBlockOutcome;
+use crate::eth::error::PoolError::AlreadyImported;
 
 /// The client version: `anvil/v{major}.{minor}.{patch}`
 pub const CLIENT_VERSION: &str = concat!("anvil/v", env!("CARGO_PKG_VERSION"));
@@ -261,6 +263,9 @@ impl EthApi {
             }
             EthRequest::EthSendRawTransactionSync(tx) => {
                 self.send_raw_transaction_sync(tx).await.to_rpc_result()
+            }
+            EthRequest::AnvilAddTransaction(tx) => {
+                self.anvil_add_transaction(tx).await.to_rpc_result()
             }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
@@ -1194,6 +1199,47 @@ impl EthApi {
         Ok(*tx.hash())
     }
 
+    /// Adds a TX directly to the ready_transactions pool
+    /// so that the transaction will end up in the block
+    /// at the desired position
+    ///
+    /// Handler for ETH RPC call: `anvil_addTx`
+    pub async fn anvil_add_transaction(&self, tx: Bytes) -> Result<TxHash> {
+        node_info!("anvil_addTx");
+        // heavily inspired by send_raw_transaction
+        let mut data = tx.as_ref();
+        if data.is_empty() {
+            return Err(BlockchainError::EmptyRawTransactionData);
+        }
+
+        let transaction = TypedTransaction::decode_2718(&mut data)
+            .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+        let pending_transaction = PendingTransaction::new(transaction)?;
+
+        // pre-validate
+        self.backend.validate_pool_transaction(&pending_transaction).await?;
+
+        let nonce = pending_transaction.transaction.nonce();
+        let requires = Vec::new();
+
+        let priority = TransactionPriority(0);
+        let pool_transaction = PoolTransaction {
+            requires,
+            provides: vec![to_marker(nonce, *pending_transaction.sender())],
+            pending_transaction,
+            priority,
+        };
+
+        // check that this transaction is not already in the pool
+        if self.pool.contains(&pool_transaction.pending_transaction.hash()) {
+            return Err(BlockchainError::from(AlreadyImported(Box::new(pool_transaction))));
+        }
+
+        let hash = self.pool.add_ready_transaction(pool_transaction)?;
+        Ok(hash)
+    }
+
     /// Sends signed transaction, returning its receipt.
     ///
     /// Handler for ETH RPC call: `eth_sendRawTransactionSync`
@@ -1938,28 +1984,24 @@ impl EthApi {
     /// Mines a series of blocks.
     ///
     /// Handler for ETH RPC call: `anvil_mine`
-    pub async fn anvil_mine(&self, num_blocks: Option<U256>, interval: Option<U256>) -> Result<()> {
+    pub async fn anvil_mine(&self, num_blocks: Option<U256>, interval: Option<U256>) -> Result<Vec<MinedBlockOutcome>> {
         node_info!("anvil_mine");
         let interval = interval.map(|i| i.to::<u64>());
         let blocks = num_blocks.unwrap_or(U256::from(1));
         if blocks.is_zero() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
-        self.on_blocking_task(|this| async move {
-            // mine all the blocks
-            for _ in 0..blocks.to::<u64>() {
-                // If we have an interval, jump forwards in time to the "next" timestamp
-                if let Some(interval) = interval {
-                    this.backend.time().increase_time(interval);
-                }
-                this.mine_one().await;
+        let mut outcomes : Vec<MinedBlockOutcome> = Vec::new();
+        for _ in 0..blocks.to::<u64>() {
+            // If we have an interval, jump forwards in time to the "next" timestamp
+            if let Some(interval) = interval {
+                self.backend.time().increase_time(interval);
             }
-            Ok(())
-        })
-        .await?;
+            outcomes.push(self.mine_one().await);
+        }
 
-        Ok(())
+        Ok(outcomes)
     }
 
     /// Sets the mining behavior to interval with the given interval (seconds)
@@ -3155,12 +3197,14 @@ impl EthApi {
     }
 
     /// Mines exactly one block
-    pub async fn mine_one(&self) {
+    pub async fn mine_one(&self) -> MinedBlockOutcome {
         let transactions = self.pool.ready_transactions().collect::<Vec<_>>();
         let outcome = self.backend.mine_block(transactions).await;
 
         trace!(target: "node", blocknumber = ?outcome.block_number, "mined block");
-        self.pool.on_mined_block(outcome);
+        self.pool.on_mined_block(&outcome);
+
+        outcome
     }
 
     /// Returns the pending block with tx hashes

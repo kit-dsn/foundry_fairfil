@@ -1331,6 +1331,9 @@ impl Backend {
 
             let best_hash = self.blockchain.storage.read().best_hash;
 
+            // nbeyer: this seems like a small hack,
+            // normally this should be set to the randao of the
+            // previous block.
             let mut input = Vec::with_capacity(40);
             input.extend_from_slice(best_hash.as_slice());
             input.extend_from_slice(&block_number.to_le_bytes());
@@ -1378,7 +1381,7 @@ impl Backend {
             };
 
             // create the new block with the current timestamp
-            let ExecutedTransactions { block, included, invalid } = executed_tx;
+            let ExecutedTransactions { block, included, invalid, failed_outcomes } = executed_tx;
             let BlockInfo { block, transactions, receipts } = block;
 
             let header = block.header.clone();
@@ -1452,7 +1455,7 @@ impl Backend {
                 node_info!("    Block Time: {:?}\n", timestamp.to_rfc2822());
             }
 
-            let outcome = MinedBlockOutcome { block_number, included, invalid };
+            let outcome = MinedBlockOutcome { block_number, included, invalid, failed_outcomes };
 
             (outcome, header, block_hash)
         };
