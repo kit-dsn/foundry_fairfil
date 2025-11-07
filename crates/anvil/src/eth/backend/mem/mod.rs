@@ -250,6 +250,8 @@ pub struct Backend {
     executor_wallet: Arc<RwLock<Option<EthereumWallet>>>,
     /// Disable pool balance checks
     disable_pool_balance_checks: bool,
+    /// Disable blob validation
+    disable_pool_blob_validation: bool,
 }
 
 impl Backend {
@@ -312,9 +314,9 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks) = {
+        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks)
+            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation)
         };
 
         let backend = Self {
@@ -342,6 +344,7 @@ impl Backend {
             capabilities: Arc::new(RwLock::new(WalletCapabilities(Default::default()))),
             executor_wallet: Arc::new(RwLock::new(None)),
             disable_pool_balance_checks,
+            disable_pool_blob_validation,
         };
 
         if let Some(interval_block_time) = automine_block_time {
@@ -3618,7 +3621,8 @@ impl TransactionValidator for Backend {
             }
 
             // Check for any blob validation errors if not impersonating.
-            if !self.skip_blob_validation(Some(*pending.sender()))
+
+            if !self.disable_pool_blob_validation && !self.skip_blob_validation(Some(*pending.sender()))
                 && let Err(err) = blob_tx.validate(EnvKzgSettings::default().get())
             {
                 return Err(InvalidTransactionError::BlobTransactionValidationError(err));

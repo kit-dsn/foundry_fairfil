@@ -281,6 +281,7 @@ impl NodeArgs {
             .with_networks(self.evm.networks)
             .with_disable_default_create2_deployer(self.evm.disable_default_create2_deployer)
             .with_disable_pool_balance_checks(self.evm.disable_pool_balance_checks)
+            .with_disable_pool_blob_validation(self.evm.disable_pool_blob_validation)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
             .with_memory_limit(self.evm.memory_limit)
             .with_cache_path(self.cache_path))
@@ -599,6 +600,10 @@ pub struct AnvilEvmArgs {
     /// Disable pool balance checks
     #[arg(long)]
     pub disable_pool_balance_checks: bool,
+
+    /// Disable pool blob validation
+    #[arg(long)]
+    pub disable_pool_blob_validation: bool,
 
     /// The memory limit per EVM execution in bytes.
     #[arg(long)]

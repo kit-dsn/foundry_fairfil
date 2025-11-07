@@ -189,6 +189,8 @@ pub struct NodeConfig {
     pub disable_default_create2_deployer: bool,
     /// Disable pool balance checks
     pub disable_pool_balance_checks: bool,
+    /// Disable blob validation
+    pub disable_pool_blob_validation: bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -488,6 +490,7 @@ impl Default for NodeConfig {
             transaction_block_keeper: None,
             disable_default_create2_deployer: false,
             disable_pool_balance_checks: false,
+            disable_pool_blob_validation: false,
             slots_in_an_epoch: 32,
             memory_limit: None,
             precompile_factory: None,
@@ -1007,6 +1010,13 @@ impl NodeConfig {
     #[must_use]
     pub fn with_disable_pool_balance_checks(mut self, yes: bool) -> Self {
         self.disable_pool_balance_checks = yes;
+        self
+    }
+
+    /// Sets whether to disable pool blob validation
+    #[must_use]
+    pub fn with_disable_pool_blob_validation(mut self, yes: bool) -> Self {
+        self.disable_pool_blob_validation = yes;
         self
     }
 
