@@ -256,6 +256,8 @@ pub struct Backend {
     exact_block_timestamps: bool,
     /// Fetch mix_hash from fork
     fetch_mix_hash: bool,
+    /// Fetch block gas_limit from fork
+    fetch_block_gas_limit: bool,
 }
 
 impl Backend {
@@ -318,9 +320,9 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_mix_hash) = {
+        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_mix_hash, fetch_block_gas_limit) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_mix_hash)
+            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit)
         };
 
         let backend = Self {
@@ -351,6 +353,7 @@ impl Backend {
             disable_pool_blob_validation,
             exact_block_timestamps,
             fetch_mix_hash,
+            fetch_block_gas_limit,
         };
 
         if let Some(interval_block_time) = automine_block_time {
@@ -1350,6 +1353,10 @@ impl Backend {
                 input.extend_from_slice(best_hash.as_slice());
                 input.extend_from_slice(&block_number.to_le_bytes());
                 env.evm_env.block_env.prevrandao = Some(keccak256(&input));
+            }
+
+            if self.fetch_block_gas_limit {
+                env.evm_env.block_env.gas_limit = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.gas_limit;
             }
 
             if self.prune_state_history_config.is_state_history_supported() {

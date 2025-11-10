@@ -195,6 +195,8 @@ pub struct NodeConfig {
     pub exact_block_timestamps: bool,
     /// Fetch mix_hash from fork
     pub fetch_mix_hash: bool,
+    /// Fetch block gas_limit from fork
+    pub fetch_block_gas_limit: bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -497,6 +499,7 @@ impl Default for NodeConfig {
             disable_pool_blob_validation: false,
             exact_block_timestamps: false,
             fetch_mix_hash: false,
+            fetch_block_gas_limit: false,
             slots_in_an_epoch: 32,
             memory_limit: None,
             precompile_factory: None,
@@ -1035,6 +1038,12 @@ impl NodeConfig {
     #[must_use]
     pub fn with_fetch_mix_hash(mut self, yes: bool) -> Self {
         self.fetch_mix_hash = yes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_fetch_block_gas_limit(mut self, yes: bool) -> Self {
+        self.fetch_block_gas_limit = yes;
         self
     }
 
