@@ -197,6 +197,8 @@ pub struct NodeConfig {
     pub fetch_mix_hash: bool,
     /// Fetch block gas_limit from fork
     pub fetch_block_gas_limit: bool,
+    /// Fetch block coinbase from fork
+    pub fetch_block_coinbase: bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -500,6 +502,7 @@ impl Default for NodeConfig {
             exact_block_timestamps: false,
             fetch_mix_hash: false,
             fetch_block_gas_limit: false,
+            fetch_block_coinbase: false,
             slots_in_an_epoch: 32,
             memory_limit: None,
             precompile_factory: None,
@@ -1046,6 +1049,13 @@ impl NodeConfig {
         self.fetch_block_gas_limit = yes;
         self
     }
+
+    #[must_use]
+    pub fn with_fetch_block_coinbase(mut self, yes: bool) -> Self {
+        self.fetch_block_coinbase = yes;
+        self
+    }
+
 
     /// Injects precompiles to `anvil`'s EVM.
     #[must_use]

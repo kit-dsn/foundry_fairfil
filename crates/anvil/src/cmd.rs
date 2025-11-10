@@ -285,6 +285,7 @@ impl NodeArgs {
             .with_exact_block_timestamp(self.evm.exact_block_timestamps)
             .with_fetch_mix_hash(self.evm.fetch_mix_hash)
             .with_fetch_block_gas_limit(self.evm.fetch_block_gas_limit)
+            .with_fetch_block_coinbase(self.evm.fetch_block_coinbase)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
             .with_memory_limit(self.evm.memory_limit)
             .with_cache_path(self.cache_path))
@@ -621,6 +622,10 @@ pub struct AnvilEvmArgs {
     #[arg(long)]
     pub fetch_block_gas_limit: bool,
 
+    /// Use fork to fetch coinbase addr from real chain
+    #[arg(long)]
+    pub fetch_block_coinbase: bool,
+    
     /// The memory limit per EVM execution in bytes.
     #[arg(long)]
     pub memory_limit: Option<u64>,
