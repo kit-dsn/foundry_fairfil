@@ -282,6 +282,7 @@ impl NodeArgs {
             .with_disable_default_create2_deployer(self.evm.disable_default_create2_deployer)
             .with_disable_pool_balance_checks(self.evm.disable_pool_balance_checks)
             .with_disable_pool_blob_validation(self.evm.disable_pool_blob_validation)
+            .with_exact_block_timestamp(self.evm.exact_block_timestamps)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
             .with_memory_limit(self.evm.memory_limit)
             .with_cache_path(self.cache_path))
@@ -604,6 +605,11 @@ pub struct AnvilEvmArgs {
     /// Disable pool blob validation
     #[arg(long)]
     pub disable_pool_blob_validation: bool,
+
+    /// Built block have exact timestamps as opposed to Anvil's default
+    /// mechanism
+    #[arg(long)]
+    pub exact_block_timestamps: bool,
 
     /// The memory limit per EVM execution in bytes.
     #[arg(long)]

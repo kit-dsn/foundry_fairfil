@@ -191,6 +191,8 @@ pub struct NodeConfig {
     pub disable_pool_balance_checks: bool,
     /// Disable blob validation
     pub disable_pool_blob_validation: bool,
+    /// Enables exact block timestamps
+    pub exact_block_timestamps: bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -491,6 +493,7 @@ impl Default for NodeConfig {
             disable_default_create2_deployer: false,
             disable_pool_balance_checks: false,
             disable_pool_blob_validation: false,
+            exact_block_timestamps: false,
             slots_in_an_epoch: 32,
             memory_limit: None,
             precompile_factory: None,
@@ -1017,6 +1020,12 @@ impl NodeConfig {
     #[must_use]
     pub fn with_disable_pool_blob_validation(mut self, yes: bool) -> Self {
         self.disable_pool_blob_validation = yes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_exact_block_timestamp(mut self, yes: bool) -> Self {
+        self.exact_block_timestamps = yes;
         self
     }
 

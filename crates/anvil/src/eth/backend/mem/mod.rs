@@ -252,6 +252,8 @@ pub struct Backend {
     disable_pool_balance_checks: bool,
     /// Disable blob validation
     disable_pool_blob_validation: bool,
+    /// Enables exact block timestamps
+    exact_block_timestamps: bool,
 }
 
 impl Backend {
@@ -314,9 +316,9 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation) = {
+        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation)
+            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps)
         };
 
         let backend = Self {
@@ -345,6 +347,7 @@ impl Backend {
             executor_wallet: Arc::new(RwLock::new(None)),
             disable_pool_balance_checks,
             disable_pool_blob_validation,
+            exact_block_timestamps,
         };
 
         if let Some(interval_block_time) = automine_block_time {
@@ -1351,10 +1354,16 @@ impl Backend {
             let (executed_tx, block_hash) = {
                 let mut db = self.db.write().await;
 
-                // finally set the next block timestamp, this is done just before execution, because
-                // there can be concurrent requests that can delay acquiring the db lock and we want
-                // to ensure the timestamp is as close as possible to the actual execution.
-                env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
+                if self.exact_block_timestamps {
+                    // Ensure that the mined block is exactly 12s after the previous one
+                    let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
+                    env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
+                } else {
+                    // finally set the next block timestamp, this is done just before execution, because
+                    // there can be concurrent requests that can delay acquiring the db lock and we want
+                    // to ensure the timestamp is as close as possible to the actual execution.
+                    env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
+                }
 
                 let executor = TransactionExecutor {
                     db: &mut **db,
