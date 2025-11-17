@@ -267,6 +267,9 @@ impl EthApi {
             EthRequest::AnvilAddTransaction(tx) => {
                 self.anvil_add_transaction(tx).await.to_rpc_result()
             }
+            EthRequest::SimulateTransaction(tx, block_id) => {
+                self.anvil_simulate_transaction(tx, block_id).await.to_rpc_result()
+            }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
                 .await
@@ -1238,6 +1241,28 @@ impl EthApi {
 
         let hash = self.pool.add_ready_transaction(pool_transaction)?;
         Ok(hash)
+    }
+
+
+    /// Handler for ETH RPC call: `anvil_simulateTransaction`
+    pub async fn anvil_simulate_transaction(&self, tx: Bytes, block_id: Option<BlockId>) -> Result<TxHash> {
+        node_info!("anvil_simulateTransaction");
+        
+        // load and parse raw transaction
+        // heavily inspired by send_raw_transaction
+        let mut data = tx.as_ref();
+        if data.is_empty() {
+            return Err(BlockchainError::EmptyRawTransactionData);
+        }
+
+        let transaction = TypedTransaction::decode_2718(&mut data)
+            .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+        let tx_hash = transaction.hash();
+    
+        self.backend.simulate_transaction_state_access(transaction).await?;
+
+        Ok(tx_hash)
     }
 
     /// Sends signed transaction, returning its receipt.

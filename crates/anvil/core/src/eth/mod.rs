@@ -156,6 +156,13 @@ pub enum EthRequest {
     #[serde(rename = "anvil_addTx", with = "sequence")]
     AnvilAddTransaction(Bytes),
 
+    /// non-standard endpoint
+    #[serde(rename = "anvil_simulateTransaction")]
+    SimulateTransaction(
+        Bytes,
+        #[serde(default)] Option<BlockId>
+    ),
+    
     #[serde(rename = "eth_call")]
     EthCall(
         WithOtherFields<TransactionRequest>,

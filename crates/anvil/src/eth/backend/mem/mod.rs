@@ -2097,6 +2097,91 @@ impl Backend {
         .await?
     }
 
+    pub async fn simulate_transaction_state_access(
+        &self,
+        tx: TypedTransaction
+    ) -> Result<(), BlockchainError> {
+        let mut env = self.env.read().clone();
+
+        if env.evm_env.block_env.basefee == 0 {
+            // this is an edge case because the evm fails if `tx.effective_gas_price < base_fee`
+            // 0 is only possible if it's manually set
+            env.evm_env.cfg_env.disable_base_fee = true;
+        }
+
+        let block_number = self.blockchain.storage.read().best_number.saturating_add(1);
+
+        env.evm_env.block_env.number = U256::from(block_number);
+
+        env.evm_env.block_env.basefee = self.base_fee();
+        env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
+
+        let best_hash = self.blockchain.storage.read().best_hash;
+
+        if self.fetch_mix_hash {
+            env.evm_env.block_env.prevrandao = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.mix_hash;
+        } else {
+            // nbeyer: this seems like a small hack,
+            // normally this should be set to the randao of the
+            // previous block.
+            let mut input = Vec::with_capacity(40);
+            input.extend_from_slice(best_hash.as_slice());
+            input.extend_from_slice(&block_number.to_le_bytes());
+            env.evm_env.block_env.prevrandao = Some(keccak256(&input));
+        }
+
+        if self.fetch_block_gas_limit {
+            env.evm_env.block_env.gas_limit = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.gas_limit;
+        }
+
+        if self.fetch_block_coinbase {
+            env.evm_env.block_env.beneficiary = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.beneficiary;
+        }
+
+        let executed_tx = {
+            let mut db = self.db.write().await;
+
+            if self.exact_block_timestamps {
+                // Ensure that the mined block is exactly 12s after the previous one
+                let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
+                env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
+            } else {
+                // finally set the next block timestamp, this is done just before execution, because
+                // there can be concurrent requests that can delay acquiring the db lock and we want
+                // to ensure the timestamp is as close as possible to the actual execution.
+                env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
+            }
+
+            let ptx = PoolTransaction::new(PendingTransaction::new(tx)?);
+
+            let executor = TransactionExecutor {
+                db: &mut **db,
+                validator: self,
+                pending: vec![Arc::new(ptx)].into_iter(),
+                block_env: env.evm_env.block_env.clone(),
+                cfg_env: env.evm_env.cfg_env.clone(),
+                parent_hash: best_hash,
+                gas_used: 0,
+                blob_gas_used: 0,
+                enable_steps_tracing: true,
+                print_logs: self.print_logs,
+                print_traces: self.print_traces,
+                call_trace_decoder: self.call_trace_decoder.clone(),
+                networks: self.env.read().networks,
+                precompile_factory: self.precompile_factory.clone(),
+                blob_params: self.blob_params(),
+                cheats: self.cheats().clone(),
+            };
+            let executed_tx = executor.execute();
+
+            executed_tx
+        };
+
+        println!("{:?}", executed_tx);
+
+        Ok(())
+    }
+
     pub fn build_access_list_with_state(
         &self,
         state: &dyn DatabaseRef,
