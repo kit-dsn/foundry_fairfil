@@ -283,6 +283,7 @@ impl NodeArgs {
             .with_disable_pool_balance_checks(self.evm.disable_pool_balance_checks)
             .with_disable_pool_blob_validation(self.evm.disable_pool_blob_validation)
             .with_exact_block_timestamp(self.evm.exact_block_timestamps)
+            .with_fetch_block_timestamp(self.evm.fetch_block_timestamps)
             .with_fetch_mix_hash(self.evm.fetch_mix_hash)
             .with_fetch_block_gas_limit(self.evm.fetch_block_gas_limit)
             .with_fetch_block_coinbase(self.evm.fetch_block_coinbase)
@@ -613,6 +614,10 @@ pub struct AnvilEvmArgs {
     /// mechanism
     #[arg(long)]
     pub exact_block_timestamps: bool,
+
+    /// Built block have the same timestamp as fork block
+    #[arg(long, conflicts_with = "exact_block_timestamps")]
+    pub fetch_block_timestamps: bool,
 
     /// Use fork to fetch prevrandao (mixHash) from real chain
     #[arg(long)]

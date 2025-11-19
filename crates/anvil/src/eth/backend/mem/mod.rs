@@ -254,6 +254,8 @@ pub struct Backend {
     disable_pool_blob_validation: bool,
     /// Enables exact block timestamps
     exact_block_timestamps: bool,
+    /// Fetch block timestamps
+    fetch_block_timestamps: bool,
     /// Fetch mix_hash from fork
     fetch_mix_hash: bool,
     /// Fetch block gas_limit from fork
@@ -322,9 +324,9 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_mix_hash, fetch_block_gas_limit, fetch_block_coinbase) = {
+        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_block_timestamps, fetch_mix_hash, fetch_block_gas_limit, fetch_block_coinbase) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit, cfg.fetch_block_coinbase)
+            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit, cfg.fetch_block_coinbase)
         };
 
         let backend = Self {
@@ -354,6 +356,7 @@ impl Backend {
             disable_pool_balance_checks,
             disable_pool_blob_validation,
             exact_block_timestamps,
+            fetch_block_timestamps,
             fetch_mix_hash,
             fetch_block_gas_limit,
             fetch_block_coinbase,
@@ -1379,6 +1382,8 @@ impl Backend {
                     // Ensure that the mined block is exactly 12s after the previous one
                     let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
                     env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
+                } else if self.fetch_block_timestamps {
+                    env.evm_env.block_env.timestamp = U256::from(self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.timestamp);
                 } else {
                     // finally set the next block timestamp, this is done just before execution, because
                     // there can be concurrent requests that can delay acquiring the db lock and we want

@@ -193,6 +193,8 @@ pub struct NodeConfig {
     pub disable_pool_blob_validation: bool,
     /// Enables exact block timestamps
     pub exact_block_timestamps: bool,
+    /// fetch block timestamps
+    pub fetch_block_timestamps: bool,
     /// Fetch mix_hash from fork
     pub fetch_mix_hash: bool,
     /// Fetch block gas_limit from fork
@@ -500,6 +502,7 @@ impl Default for NodeConfig {
             disable_pool_balance_checks: false,
             disable_pool_blob_validation: false,
             exact_block_timestamps: false,
+            fetch_block_timestamps: false,
             fetch_mix_hash: false,
             fetch_block_gas_limit: false,
             fetch_block_coinbase: false,
@@ -1035,6 +1038,12 @@ impl NodeConfig {
     #[must_use]
     pub fn with_exact_block_timestamp(mut self, yes: bool) -> Self {
         self.exact_block_timestamps = yes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_fetch_block_timestamp(mut self, yes: bool) -> Self {
+        self.fetch_block_timestamps = yes;
         self
     }
 
