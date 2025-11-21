@@ -9,7 +9,7 @@ use std::{
 use alloy_consensus::Header;
 use alloy_eips::{
     calc_next_block_base_fee, eip1559::BaseFeeParams, eip7691::MAX_BLOBS_PER_BLOCK_ELECTRA,
-    eip7840::BlobParams,
+    eip7840::{self, BlobParams},
 };
 use alloy_primitives::B256;
 use anvil_core::eth::transaction::TypedTransaction;
@@ -166,7 +166,12 @@ impl FeeManager {
     /// Calculates the next block blob excess gas, using the provided parent blob gas used and
     /// parent blob excess gas
     pub fn get_next_block_blob_excess_gas(&self, blob_gas_used: u64, blob_excess_gas: u64) -> u64 {
-        alloy_eips::eip4844::calc_excess_blob_gas(blob_gas_used, blob_excess_gas)
+        // nbeyer: Anvil used old values to calculate the blob gas.
+        if self.spec_id == SpecId::PRAGUE {
+            eip7840::BlobParams::prague().next_block_excess_blob_gas_osaka(blob_excess_gas, blob_gas_used, self.base_fee())    
+        } else {
+            alloy_eips::eip4844::calc_excess_blob_gas(blob_gas_used, blob_excess_gas)
+        }
     }
 }
 
