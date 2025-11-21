@@ -262,6 +262,8 @@ pub struct Backend {
     fetch_block_gas_limit: bool,
     /// Fetch block coinbase from fork
     fetch_block_coinbase: bool,
+    /// Fetch parentBeaconRoot from fork
+    fetch_parent_beacon_root: bool
 }
 
 impl Backend {
@@ -324,9 +326,9 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_block_timestamps, fetch_mix_hash, fetch_block_gas_limit, fetch_block_coinbase) = {
+        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_block_timestamps, fetch_mix_hash, fetch_block_gas_limit, fetch_block_coinbase, fetch_parent_beacon_root) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit, cfg.fetch_block_coinbase)
+            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit, cfg.fetch_block_coinbase, cfg.fetch_parent_beacon_root)
         };
 
         let backend = Self {
@@ -360,6 +362,7 @@ impl Backend {
             fetch_mix_hash,
             fetch_block_gas_limit,
             fetch_block_coinbase,
+            fetch_parent_beacon_root
         };
 
         if let Some(interval_block_time) = automine_block_time {
@@ -1296,6 +1299,7 @@ impl Backend {
             networks: self.env.read().networks,
             blob_params: self.blob_params(),
             cheats: self.cheats().clone(),
+            parent_beacon_root: None, // TODO?
         };
 
         // create a new pending block
@@ -1375,6 +1379,13 @@ impl Backend {
                 self.states.write().insert(best_hash, db);
             }
 
+            let parent_beacon_root = if self.fetch_parent_beacon_root {
+                let parent_beacon_root = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.parent_beacon_block_root;
+                parent_beacon_root
+            } else {
+                None
+            };
+
             let (executed_tx, block_hash) = {
                 let mut db = self.db.write().await;
 
@@ -1408,6 +1419,7 @@ impl Backend {
                     precompile_factory: self.precompile_factory.clone(),
                     blob_params: self.blob_params(),
                     cheats: self.cheats().clone(),
+                    parent_beacon_root: parent_beacon_root,
                 };
                 let executed_tx = executor.execute();
 
@@ -2789,6 +2801,7 @@ impl Backend {
                 networks: self.env.read().networks,
                 blob_params: self.blob_params(),
                 cheats: self.cheats().clone(),
+                parent_beacon_root: None // TODO?
             };
 
             let _ = executor.execute();

@@ -287,6 +287,7 @@ impl NodeArgs {
             .with_fetch_mix_hash(self.evm.fetch_mix_hash)
             .with_fetch_block_gas_limit(self.evm.fetch_block_gas_limit)
             .with_fetch_block_coinbase(self.evm.fetch_block_coinbase)
+            .with_fetch_parent_beacon_root(self.evm.fetch_parent_beacon_root)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
             .with_memory_limit(self.evm.memory_limit)
             .with_cache_path(self.cache_path))
@@ -630,6 +631,10 @@ pub struct AnvilEvmArgs {
     /// Use fork to fetch coinbase addr from real chain
     #[arg(long)]
     pub fetch_block_coinbase: bool,
+
+    /// Use fork to fetch parent beacon root
+    #[arg(long)]
+    pub fetch_parent_beacon_root : bool,
     
     /// The memory limit per EVM execution in bytes.
     #[arg(long)]

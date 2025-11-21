@@ -201,6 +201,8 @@ pub struct NodeConfig {
     pub fetch_block_gas_limit: bool,
     /// Fetch block coinbase from fork
     pub fetch_block_coinbase: bool,
+    /// Fetch parentBeaconRoot from fork
+    pub fetch_parent_beacon_root : bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -506,6 +508,7 @@ impl Default for NodeConfig {
             fetch_mix_hash: false,
             fetch_block_gas_limit: false,
             fetch_block_coinbase: false,
+            fetch_parent_beacon_root: false,
             slots_in_an_epoch: 32,
             memory_limit: None,
             precompile_factory: None,
@@ -1065,6 +1068,12 @@ impl NodeConfig {
         self
     }
 
+
+    #[must_use]
+    pub fn with_fetch_parent_beacon_root(mut self, yes: bool) -> Self {
+        self.fetch_parent_beacon_root = yes;
+        self
+    }
 
     /// Injects precompiles to `anvil`'s EVM.
     #[must_use]

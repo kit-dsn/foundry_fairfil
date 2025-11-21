@@ -19,9 +19,7 @@ use alloy_consensus::{
 };
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, eip7840::BlobParams};
 use alloy_evm::{
-    EthEvm, Evm,
-    eth::EthEvmContext,
-    precompiles::{DynPrecompile, Precompile, PrecompilesMap},
+    EthEvm, Evm, EvmEnv, eth::{EthEvmBuilder, EthEvmContext}, precompiles::{DynPrecompile, Precompile, PrecompilesMap}
 };
 use alloy_op_evm::OpEvm;
 use alloy_primitives::{B256, Bloom, BloomInput, Log};
@@ -138,6 +136,8 @@ pub struct TransactionExecutor<'a, Db: ?Sized, V: TransactionValidator> {
     pub precompile_factory: Option<Arc<dyn PrecompileFactory>>,
     pub blob_params: BlobParams,
     pub cheats: CheatsManager,
+    /// parent beacon block root used to implement EIP-4788
+    pub parent_beacon_root: Option<B256>,
 }
 
 impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
@@ -169,6 +169,25 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
         let is_prague = self.cfg_env.spec >= SpecId::PRAGUE;
         let excess_blob_gas = if is_cancun { self.block_env.blob_excess_gas() } else { None };
         let mut cumulative_blob_gas_used = if is_cancun { Some(0u64) } else { None };
+
+        // Implement EIP-4788
+        {
+            if is_cancun && self.parent_beacon_root.is_some() {
+                let env = EvmEnv { cfg_env: self.cfg_env.clone(), block_env: self.block_env.clone() };
+                let mut evm = EthEvmBuilder::new(&mut self.db, env).build();
+                let sys_call = evm.transact_system_call(
+                    alloy_eips::eip4788::SYSTEM_ADDRESS, 
+                    alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, 
+                    self.parent_beacon_root.unwrap().into()
+                );
+                if let Ok(result) = sys_call {
+                    self.db.commit(result.state);
+                } else {
+                    panic!("EIP-4788 system call failed");
+                }
+            }
+        }
+
 
         for tx in self.into_iter() {
             let tx = match tx {
@@ -266,7 +285,7 @@ impl<DB: Db + ?Sized, V: TransactionValidator> TransactionExecutor<'_, DB, V> {
             mix_hash: mix_hash.unwrap_or_default(),
             nonce: Default::default(),
             base_fee,
-            parent_beacon_block_root: is_cancun.then_some(Default::default()),
+            parent_beacon_block_root: self.parent_beacon_root.or(Default::default()),
             blob_gas_used: cumulative_blob_gas_used,
             excess_blob_gas,
             withdrawals_root: is_shanghai.then_some(EMPTY_WITHDRAWALS),
