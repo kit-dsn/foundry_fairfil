@@ -128,6 +128,7 @@ use revm::{
     primitives::{KECCAK_EMPTY, hardfork::SpecId},
     state::AccountInfo,
 };
+use core::panic;
 use std::{
     collections::BTreeMap,
     fmt::Debug,
@@ -2138,6 +2139,13 @@ impl Backend {
             env.evm_env.block_env.beneficiary = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.beneficiary;
         }
 
+        let parent_beacon_root = if self.fetch_parent_beacon_root {
+            let parent_beacon_root = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.parent_beacon_block_root;
+            parent_beacon_root
+        } else {
+            None
+        };
+
         let executed_tx = {
             let mut db = self.db.write().await;
 
@@ -2153,6 +2161,9 @@ impl Backend {
             }
 
             let ptx = PoolTransaction::new(PendingTransaction::new(tx)?);
+
+            // to simulate a transaction, we don't want to run into nonce errors
+            env.evm_env.cfg_env.disable_nonce_check = true;
 
             let executor = TransactionExecutor {
                 db: &mut **db,
@@ -2171,6 +2182,7 @@ impl Backend {
                 precompile_factory: self.precompile_factory.clone(),
                 blob_params: self.blob_params(),
                 cheats: self.cheats().clone(),
+                parent_beacon_root: parent_beacon_root, 
             };
             let executed_tx = executor.execute();
 

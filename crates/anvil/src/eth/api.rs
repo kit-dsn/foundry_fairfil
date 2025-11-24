@@ -267,8 +267,8 @@ impl EthApi {
             EthRequest::AnvilAddTransaction(tx) => {
                 self.anvil_add_transaction(tx).await.to_rpc_result()
             }
-            EthRequest::SimulateTransaction(tx, block_id) => {
-                self.anvil_simulate_transaction(tx, block_id).await.to_rpc_result()
+            EthRequest::SimulateTransaction(tx) => {
+                self.anvil_simulate_transaction(tx).await.to_rpc_result()
             }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
@@ -1245,7 +1245,7 @@ impl EthApi {
 
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
-    pub async fn anvil_simulate_transaction(&self, tx: Bytes, block_id: Option<BlockId>) -> Result<TxHash> {
+    pub async fn anvil_simulate_transaction(&self, tx: Bytes) -> Result<TxHash> {
         node_info!("anvil_simulateTransaction");
         
         // load and parse raw transaction
