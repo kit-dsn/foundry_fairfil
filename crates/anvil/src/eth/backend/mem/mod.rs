@@ -35,7 +35,7 @@ use crate::{
 };
 use alloy_chains::NamedChain;
 use alloy_consensus::{
-    Account, Blob, BlockHeader, EnvKzgSettings, Header, Receipt, ReceiptWithBloom, Signed,
+    Blob, BlockHeader, EnvKzgSettings, Header, Receipt, ReceiptWithBloom, Signed,
     Transaction as TransactionTrait, TxEnvelope,
     proofs::{calculate_receipt_root, calculate_transaction_root},
     transaction::Recovered,
@@ -59,8 +59,7 @@ use alloy_network::{
     EthereumWallet, UnknownTxEnvelope, UnknownTypedTransaction,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U64, U256, address, hex, keccak256, logs_bloom,
-    map::HashMap,
+    Address, B256, Bytes, FixedBytes, TxHash, TxKind, U64, U256, address, hex, keccak256, logs_bloom, map::HashMap
 };
 use alloy_rpc_types::{
     AccessList, Block as AlloyBlock, BlockId, BlockNumberOrTag as BlockNumber, BlockTransactions,
@@ -112,12 +111,12 @@ use foundry_evm::{
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use op_alloy_consensus::DEPOSIT_TX_TYPE_ID;
 use op_revm::{
-    OpContext, OpHaltReason, OpTransaction, transaction::deposit::DepositTransactionParts,
+    OpContext, OpHaltReason, OpTransaction, OpTransactionError, transaction::deposit::DepositTransactionParts
 };
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use revm::{
     DatabaseCommit, Inspector,
-    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv},
+    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::{EVMError, ExecResultAndState}},
     context_interface::{
         block::BlobExcessGasAndPrice,
         result::{ExecutionResult, Output, ResultAndState},
@@ -128,7 +127,7 @@ use revm::{
     primitives::{KECCAK_EMPTY, hardfork::SpecId},
     state::AccountInfo,
 };
-use core::panic;
+use revm_inspectors::tracing::types::StorageChange;
 use std::{
     collections::BTreeMap,
     fmt::Debug,
@@ -264,7 +263,7 @@ pub struct Backend {
     /// Fetch block coinbase from fork
     fetch_block_coinbase: bool,
     /// Fetch parentBeaconRoot from fork
-    fetch_parent_beacon_root: bool
+    fetch_parent_beacon_root: bool,
 }
 
 impl Backend {
@@ -327,9 +326,31 @@ impl Backend {
             states = states.disk_path(cache_path);
         }
 
-        let (slots_in_an_epoch, precompile_factory, disable_pool_balance_checks, disable_pool_blob_validation, exact_block_timestamps, fetch_block_timestamps, fetch_mix_hash, fetch_block_gas_limit, fetch_block_coinbase, fetch_parent_beacon_root) = {
+        let (
+            slots_in_an_epoch,
+            precompile_factory,
+            disable_pool_balance_checks,
+            disable_pool_blob_validation,
+            exact_block_timestamps,
+            fetch_block_timestamps,
+            fetch_mix_hash,
+            fetch_block_gas_limit,
+            fetch_block_coinbase,
+            fetch_parent_beacon_root,
+        ) = {
             let cfg = node_config.read().await;
-            (cfg.slots_in_an_epoch, cfg.precompile_factory.clone(), cfg.disable_pool_balance_checks, cfg.disable_pool_blob_validation, cfg.exact_block_timestamps, cfg.fetch_block_timestamps, cfg.fetch_mix_hash, cfg.fetch_block_gas_limit, cfg.fetch_block_coinbase, cfg.fetch_parent_beacon_root)
+            (
+                cfg.slots_in_an_epoch,
+                cfg.precompile_factory.clone(),
+                cfg.disable_pool_balance_checks,
+                cfg.disable_pool_blob_validation,
+                cfg.exact_block_timestamps,
+                cfg.fetch_block_timestamps,
+                cfg.fetch_mix_hash,
+                cfg.fetch_block_gas_limit,
+                cfg.fetch_block_coinbase,
+                cfg.fetch_parent_beacon_root,
+            )
         };
 
         let backend = Self {
@@ -363,7 +384,7 @@ impl Backend {
             fetch_mix_hash,
             fetch_block_gas_limit,
             fetch_block_coinbase,
-            fetch_parent_beacon_root
+            fetch_parent_beacon_root,
         };
 
         if let Some(interval_block_time) = automine_block_time {
@@ -1355,7 +1376,15 @@ impl Backend {
             let best_hash = self.blockchain.storage.read().best_hash;
 
             if self.fetch_mix_hash {
-                env.evm_env.block_env.prevrandao = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.mix_hash;
+                env.evm_env.block_env.prevrandao = self
+                    .get_fork()
+                    .unwrap()
+                    .block_by_number(block_number)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .mix_hash;
             } else {
                 // nbeyer: this seems like a small hack,
                 // normally this should be set to the randao of the
@@ -1367,11 +1396,27 @@ impl Backend {
             }
 
             if self.fetch_block_gas_limit {
-                env.evm_env.block_env.gas_limit = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.gas_limit;
+                env.evm_env.block_env.gas_limit = self
+                    .get_fork()
+                    .unwrap()
+                    .block_by_number(block_number)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .gas_limit;
             }
 
             if self.fetch_block_coinbase {
-                env.evm_env.block_env.beneficiary = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.beneficiary;
+                env.evm_env.block_env.beneficiary = self
+                    .get_fork()
+                    .unwrap()
+                    .block_by_number(block_number)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .beneficiary;
             }
 
             if self.prune_state_history_config.is_state_history_supported() {
@@ -1381,7 +1426,15 @@ impl Backend {
             }
 
             let parent_beacon_root = if self.fetch_parent_beacon_root {
-                let parent_beacon_root = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.parent_beacon_block_root;
+                let parent_beacon_root = self
+                    .get_fork()
+                    .unwrap()
+                    .block_by_number(block_number)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .parent_beacon_block_root;
                 parent_beacon_root
             } else {
                 None
@@ -1395,7 +1448,16 @@ impl Backend {
                     let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
                     env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
                 } else if self.fetch_block_timestamps {
-                    env.evm_env.block_env.timestamp = U256::from(self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.timestamp);
+                    env.evm_env.block_env.timestamp = U256::from(
+                        self.get_fork()
+                            .unwrap()
+                            .block_by_number(block_number)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .header
+                            .timestamp,
+                    );
                 } else {
                     // finally set the next block timestamp, this is done just before execution, because
                     // there can be concurrent requests that can delay acquiring the db lock and we want
@@ -1420,7 +1482,7 @@ impl Backend {
                     precompile_factory: self.precompile_factory.clone(),
                     blob_params: self.blob_params(),
                     cheats: self.cheats().clone(),
-                    parent_beacon_root: parent_beacon_root,
+                    parent_beacon_root,
                 };
                 let executed_tx = executor.execute();
 
@@ -2100,96 +2162,167 @@ impl Backend {
 
     pub async fn simulate_transaction_state_access(
         &self,
-        tx: TypedTransaction
+        tx: TypedTransaction,
     ) -> Result<(), BlockchainError> {
-        let mut env = self.env.read().clone();
-
-        if env.evm_env.block_env.basefee == 0 {
-            // this is an edge case because the evm fails if `tx.effective_gas_price < base_fee`
-            // 0 is only possible if it's manually set
-            env.evm_env.cfg_env.disable_base_fee = true;
-        }
-
         let block_number = self.blockchain.storage.read().best_number.saturating_add(1);
+        let best_hash = self.blockchain.storage.read().best_hash; // hash of previous block
 
-        env.evm_env.block_env.number = U256::from(block_number);
+        let db = self.db.read().await;
+        let mut cache_db = CacheDB::new(db.current_state());
+        
+        let mut env = self.env.read().clone();
 
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
 
-        let best_hash = self.blockchain.storage.read().best_hash;
+        // disable nonce checks
+        env.evm_env.cfg_env.disable_nonce_check = true;
 
         if self.fetch_mix_hash {
-            env.evm_env.block_env.prevrandao = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.mix_hash;
-        } else {
-            // nbeyer: this seems like a small hack,
-            // normally this should be set to the randao of the
-            // previous block.
-            let mut input = Vec::with_capacity(40);
-            input.extend_from_slice(best_hash.as_slice());
-            input.extend_from_slice(&block_number.to_le_bytes());
-            env.evm_env.block_env.prevrandao = Some(keccak256(&input));
+            env.evm_env.block_env.prevrandao = self
+                .get_fork()
+                .unwrap()
+                .block_by_number(block_number)
+                .await
+                .unwrap()
+                .unwrap()
+                .header
+                .mix_hash;
         }
 
         if self.fetch_block_gas_limit {
-            env.evm_env.block_env.gas_limit = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.gas_limit;
+            env.evm_env.block_env.gas_limit = self
+                .get_fork()
+                .unwrap()
+                .block_by_number(block_number)
+                .await
+                .unwrap()
+                .unwrap()
+                .header
+                .gas_limit;
         }
 
         if self.fetch_block_coinbase {
-            env.evm_env.block_env.beneficiary = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.beneficiary;
+            env.evm_env.block_env.beneficiary = self
+                .get_fork()
+                .unwrap()
+                .block_by_number(block_number)
+                .await
+                .unwrap()
+                .unwrap()
+                .header
+                .beneficiary;
         }
 
         let parent_beacon_root = if self.fetch_parent_beacon_root {
-            let parent_beacon_root = self.get_fork().unwrap().block_by_number(block_number).await.unwrap().unwrap().header.parent_beacon_block_root;
+            let parent_beacon_root = self
+                .get_fork()
+                .unwrap()
+                .block_by_number(block_number)
+                .await
+                .unwrap()
+                .unwrap()
+                .header
+                .parent_beacon_block_root;
             parent_beacon_root
         } else {
             None
         };
 
-        let executed_tx = {
-            let mut db = self.db.write().await;
+        if self.exact_block_timestamps {
+            // Ensure that the mined block is exactly 12s after the previous one
+            let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
+            env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
+        } else if self.fetch_block_timestamps {
+            env.evm_env.block_env.timestamp = U256::from(
+                self.get_fork()
+                    .unwrap()
+                    .block_by_number(block_number)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .timestamp,
+            );
+        } else {
+            // finally set the next block timestamp, this is done just before execution, because
+            // there can be concurrent requests that can delay acquiring the db lock and we want
+            // to ensure the timestamp is as close as possible to the actual execution.
+            env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
+        }
 
-            if self.exact_block_timestamps {
-                // Ensure that the mined block is exactly 12s after the previous one
-                let prev_block = self.block_by_hash(best_hash).await.unwrap().unwrap();
-                env.evm_env.block_env.timestamp = U256::from(prev_block.header.timestamp + 12);
-            } else {
-                // finally set the next block timestamp, this is done just before execution, because
-                // there can be concurrent requests that can delay acquiring the db lock and we want
-                // to ensure the timestamp is as close as possible to the actual execution.
-                env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
+        let mut inspector = self.build_inspector();
+        let mut evm = self.new_evm_with_inspector_ref(
+            &cache_db,
+            &env,
+            &mut inspector,
+        );
+
+        // Do EIP-4788
+        if env.evm_env.cfg_env.spec >= SpecId::CANCUN && parent_beacon_root.is_some() {
+            let eip4788_result= evm.transact_system_call(
+                alloy_eips::eip4788::SYSTEM_ADDRESS, 
+                alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, 
+                parent_beacon_root.unwrap().into()
+            )?;
+
+            cache_db.commit(eip4788_result.state);
+        }
+
+        let mut inspector = self.build_inspector().with_access_list_inspector().with_steps_tracing();
+        evm = self.new_evm_with_inspector_ref(
+            &cache_db,
+            &env,
+            &mut inspector,
+        );
+
+        env.tx = PendingTransaction::new(tx)?.to_revm_tx_env();
+        let eth_res: Result<ExecResultAndState<_>, EVMError<DatabaseError, OpTransactionError>> = evm.transact(env.tx);
+
+        // fetch the access set
+        let mut accessed = HashMap::new();
+        inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
+            b.iter().for_each(|key| {
+                accessed.entry(*a).or_insert(Vec::<U256>::new()).push((*key as FixedBytes<32>).into())
+            });
+        });
+
+        let state_diffs: Vec<(Address, Box<StorageChange>)> = inspector.tracer.unwrap()
+            .traces()
+            .nodes()
+            .iter()
+            .map(|n| 
+                n.trace.steps.iter().map(|s| {
+                    if s.storage_change.is_none() {
+                        None
+                    } else {
+                        Some((n.execution_address(), s.storage_change.clone()))
+                    }
+                })
+            .collect::<Vec<_>>())
+            .flatten().flatten()
+            .flat_map(|i| {
+                if i.1.is_none() {
+                    None
+                } else {
+                    Some((i.0, i.1.unwrap()))
+                }
+            })
+            .collect();
+
+        // fetch the write set
+        let mut writes = HashMap::new();
+        for (address, change) in state_diffs {
+            if let Some(prev_value) = change.had_value {
+                if prev_value != change.value {
+                    writes.entry(address).or_insert(Vec::<U256>::new()).push(change.key);
+                }
             }
+        }
 
-            let ptx = PoolTransaction::new(PendingTransaction::new(tx)?);
-
-            // to simulate a transaction, we don't want to run into nonce errors
-            env.evm_env.cfg_env.disable_nonce_check = true;
-
-            let executor = TransactionExecutor {
-                db: &mut **db,
-                validator: self,
-                pending: vec![Arc::new(ptx)].into_iter(),
-                block_env: env.evm_env.block_env.clone(),
-                cfg_env: env.evm_env.cfg_env.clone(),
-                parent_hash: best_hash,
-                gas_used: 0,
-                blob_gas_used: 0,
-                enable_steps_tracing: true,
-                print_logs: self.print_logs,
-                print_traces: self.print_traces,
-                call_trace_decoder: self.call_trace_decoder.clone(),
-                networks: self.env.read().networks,
-                precompile_factory: self.precompile_factory.clone(),
-                blob_params: self.blob_params(),
-                cheats: self.cheats().clone(),
-                parent_beacon_root: parent_beacon_root, 
-            };
-            let executed_tx = executor.execute();
-
-            executed_tx
-        };
-
-        println!("{:?}", executed_tx);
+        println!("status: {:?}", eth_res.ok().unwrap().result.is_success());
+        println!("writes: {:?}", writes);
+        println!("accessed: {:?}", accessed);
 
         Ok(())
     }
@@ -2701,7 +2834,7 @@ impl Backend {
         &self,
         address: Address,
         block_request: Option<BlockRequest>,
-    ) -> Result<Account, BlockchainError> {
+    ) -> Result<alloy_consensus::Account, BlockchainError> {
         self.with_database_at(block_request, |block_db, _| {
             let db = block_db.maybe_as_full_db().ok_or(BlockchainError::DataUnavailable)?;
             let account = db.get(&address).cloned().unwrap_or_default();
@@ -2709,7 +2842,7 @@ impl Backend {
             let code_hash = account.info.code_hash;
             let balance = account.info.balance;
             let nonce = account.info.nonce;
-            Ok(Account { balance, nonce, code_hash, storage_root })
+            Ok(alloy_consensus::Account { balance, nonce, code_hash, storage_root })
         })
         .await?
     }
@@ -2898,7 +3031,7 @@ impl Backend {
                 networks: self.env.read().networks,
                 blob_params: self.blob_params(),
                 cheats: self.cheats().clone(),
-                parent_beacon_root: None // TODO?
+                parent_beacon_root: None, // TODO?
             };
 
             let _ = executor.execute();
@@ -3767,7 +3900,8 @@ impl TransactionValidator for Backend {
 
             // Check for any blob validation errors if not impersonating.
 
-            if !self.disable_pool_blob_validation && !self.skip_blob_validation(Some(*pending.sender()))
+            if !self.disable_pool_blob_validation
+                && !self.skip_blob_validation(Some(*pending.sender()))
                 && let Err(err) = blob_tx.validate(EnvKzgSettings::default().get())
             {
                 return Err(InvalidTransactionError::BlobTransactionValidationError(err));

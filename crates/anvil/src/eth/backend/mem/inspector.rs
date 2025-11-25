@@ -2,10 +2,11 @@
 
 use crate::eth::macros::node_info;
 use alloy_primitives::{Address, Log, U256};
+use alloy_rpc_types::AccessList;
 use foundry_evm::{
     call_inspectors,
     decode::decode_console_logs,
-    inspectors::{LogCollector, TracingInspector},
+    inspectors::{AccessListInspector, LogCollector, TracingInspector},
     traces::{
         CallTraceDecoder, SparsedTraceArena, TracingInspectorConfig, render_trace_arena_inner,
     },
@@ -31,6 +32,8 @@ pub struct AnvilInspector {
     pub log_collector: Option<LogCollector>,
     /// Collects all internal ETH transfers as ERC20 transfer events.
     pub transfer: Option<TransferInspector>,
+    /// Collects access lists
+    pub access_list: Option<AccessListInspector>,
 }
 
 impl AnvilInspector {
@@ -93,6 +96,12 @@ impl AnvilInspector {
         self.tracer = Some(TracingInspector::new(TracingInspectorConfig::all().with_state_diffs()));
         self
     }
+
+    /// Configures the `Tracer` [`revm::Inspector`] with an access list inspector
+    pub fn with_access_list_inspector(mut self) -> Self {
+        self.access_list = Some(AccessListInspector::new(AccessList::default()));
+        self
+    }
 }
 
 /// Prints the traces for the inspector
@@ -127,7 +136,7 @@ where
     }
 
     fn step(&mut self, interp: &mut Interpreter, ecx: &mut CTX) {
-        call_inspectors!([&mut self.tracer], |inspector| {
+        call_inspectors!([&mut self.tracer, &mut self.access_list], |inspector| {
             inspector.step(interp, ecx);
         });
     }
@@ -148,7 +157,7 @@ where
     fn call(&mut self, ecx: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
         call_inspectors!(
             #[ret]
-            [&mut self.tracer, &mut self.log_collector, &mut self.transfer],
+            [&mut self.tracer, &mut self.log_collector, &mut self.transfer, &mut self.access_list],
             |inspector| inspector.call(ecx, inputs).map(Some),
         );
         None
@@ -163,7 +172,7 @@ where
     fn create(&mut self, ecx: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
         call_inspectors!(
             #[ret]
-            [&mut self.tracer, &mut self.transfer],
+            [&mut self.tracer, &mut self.transfer, &mut self.access_list],
             |inspector| inspector.create(ecx, inputs).map(Some),
         );
         None

@@ -1259,7 +1259,7 @@ impl EthApi {
             .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
 
         let tx_hash = transaction.hash();
-    
+            
         self.backend.simulate_transaction_state_access(transaction).await?;
 
         Ok(tx_hash)
