@@ -59,7 +59,7 @@ use alloy_network::{
     EthereumWallet, UnknownTxEnvelope, UnknownTypedTransaction,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, FixedBytes, TxHash, TxKind, U64, U256, address, hex, keccak256, logs_bloom, map::HashMap
+    Address, B256, Bytes, FixedBytes, TxHash, TxKind, U64, U256, aliases::I512, address, hex, keccak256, logs_bloom, map::HashMap
 };
 use alloy_rpc_types::{
     AccessList, Block as AlloyBlock, BlockId, BlockNumberOrTag as BlockNumber, BlockTransactions,
@@ -177,11 +177,26 @@ impl BlockRequest {
 /// The storage slots that a transaction accesses and writes to
 #[derive(Debug, Serialize)]
 pub struct TransactionAccessSimulationResult {
+    // the hash of the transaction
     pub hash: TxHash,
+    // all storage slots that were accessed by transaction (read & write)
     pub accesses: HashMap<Address, Vec<U256>, RandomState>,
+    // all storage slots that were written to
     pub writes: HashMap<Address, Vec<U256>, RandomState>,
+    // all difference in ETH balance that originate from code execution (no fees)
+    pub transfer_diffs: HashMap<Address, I512, RandomState>,
+    // if the transaction was successful
     pub success: bool,
+    // amount of gas used
     pub gas_used: u64,
+    // amount of ETH burned (base fee)
+    pub burned_ether: I512,
+    // amount of ETH transfered to coinbase as priority fee
+    pub priority_fee: I512,
+    // the sender of the transaction
+    pub sender: Address,
+    // the beneficiary account/miner/coinbase address
+    pub coinbase: Address,
 }
 
 /// Gives access to the [revm::Database]
@@ -2255,7 +2270,7 @@ impl Backend {
         env.tx = pending_tx.to_revm_tx_env();
 
         let coinbase_pre_state = db.current_state().0.basic_ref(env.evm_env.block_env.beneficiary)?.unwrap();
-        let sender_pre_state = db.current_state().0.basic_ref(env.evm_env.block_env.beneficiary)?.unwrap();
+        let sender_pre_state = db.current_state().0.basic_ref(*pending_tx.sender())?.unwrap();
 
         let mut inspector = self.build_inspector();
         let mut evm = self.new_evm_with_inspector_ref(
@@ -2332,11 +2347,10 @@ impl Backend {
             }
         }
 
-        println!("{:?}", inspector.transfer);
 
         let sender_post_state = eth_res.state.get(pending_tx.sender()).unwrap();
         let coinbase_post_state = eth_res.state.get(&env.evm_env.block_env.beneficiary).unwrap();
-        
+
         println!("coinbase_pre: {:?}", coinbase_pre_state);
         println!("sender_pre: {:?}", sender_pre_state);
         println!("coinbase_post: {:?}", coinbase_post_state);
@@ -2346,19 +2360,31 @@ impl Backend {
         let mut eth_diffs = HashMap::new();
         for transfer_operation in inspector.transfer.unwrap().into_transfers() {
             // deduce from
-            let diff_from = eth_diffs.entry(transfer_operation.from).or_insert(U256::from(0));
-            diff_from.checked_sub(transfer_operation.value);
+            let diff_from = eth_diffs.entry(transfer_operation.from).or_insert(I512::ZERO);
+            *diff_from = diff_from.checked_sub(I512::from(transfer_operation.value)).unwrap();
 
-            let diff_to = eth_diffs.entry(transfer_operation.to).or_insert(U256::from(0));
-            diff_to.saturating_add(transfer_operation.value);
+            // increment to
+            let diff_to = eth_diffs.entry(transfer_operation.to).or_insert(I512::ZERO);
+            *diff_to = diff_to.checked_add(I512::from(transfer_operation.value)).unwrap();
         }
+
+        let sender_a_diff : I512 = I512::from(sender_post_state.info.balance).checked_sub(I512::from(sender_pre_state.balance)).unwrap();
+        let coinbase_a_diff : I512 = I512::from(coinbase_post_state.info.balance).checked_sub(I512::from(coinbase_pre_state.balance)).unwrap();
+
+        let prio_fees = coinbase_a_diff.checked_sub(*eth_diffs.get(&env.evm_env.block_env.beneficiary).unwrap_or(&I512::ZERO)).unwrap();
+        let burned_fees = eth_diffs.get(pending_tx.sender()).unwrap_or(&I512::ZERO).checked_sub(sender_a_diff).unwrap().checked_sub(prio_fees).unwrap();
 
         let out = TransactionAccessSimulationResult {
             hash: tx_hash,
             accesses: accessed,
             writes: writes,
+            transfer_diffs: eth_diffs,
             success: eth_res.result.is_success(),
-            gas_used: eth_res.result.gas_used()
+            gas_used: eth_res.result.gas_used(),
+            burned_ether: burned_fees,
+            priority_fee: prio_fees,
+            sender: *pending_tx.sender(),
+            coinbase: env.evm_env.block_env.beneficiary,
         };
 
         Ok(out)
