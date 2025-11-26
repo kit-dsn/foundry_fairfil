@@ -115,17 +115,10 @@ use op_revm::{
 };
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use revm::{
-    DatabaseCommit, Inspector,
-    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::{ExecResultAndState}},
-    context_interface::{
+    DatabaseCommit, Inspector, context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::ExecResultAndState}, context_interface::{
         block::BlobExcessGasAndPrice,
         result::{ExecutionResult, Output, ResultAndState},
-    },
-    database::{CacheDB, DbAccount, WrapDatabaseRef},
-    interpreter::InstructionResult,
-    precompile::{PrecompileSpecId, Precompiles},
-    primitives::{KECCAK_EMPTY, hardfork::SpecId},
-    state::AccountInfo,
+    }, database::{CacheDB, DbAccount, WrapDatabaseRef}, interpreter::InstructionResult, precompile::{PrecompileSpecId, Precompiles}, primitives::{KECCAK_EMPTY, hardfork::SpecId}, state::AccountInfo
 };
 use revm_inspectors::tracing::types::StorageChange;
 use serde::Serialize;
@@ -2258,6 +2251,12 @@ impl Backend {
             env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
         }
 
+        let pending_tx = PendingTransaction::new(tx)?;
+        env.tx = pending_tx.to_revm_tx_env();
+
+        let coinbase_pre_state = db.current_state().0.basic_ref(env.evm_env.block_env.beneficiary)?.unwrap();
+        let sender_pre_state = db.current_state().0.basic_ref(env.evm_env.block_env.beneficiary)?.unwrap();
+
         let mut inspector = self.build_inspector();
         let mut evm = self.new_evm_with_inspector_ref(
             &cache_db,
@@ -2276,16 +2275,19 @@ impl Backend {
             cache_db.commit(eip4788_result.state);
         }
 
-        let mut inspector = self.build_inspector().with_access_list_inspector().with_steps_tracing();
+        let mut inspector = self.build_inspector()
+            .with_access_list_inspector()
+            .with_steps_tracing()
+            .with_transfers();
+
         evm = self.new_evm_with_inspector_ref(
             &cache_db,
             &env,
             &mut inspector,
         );
 
-        env.tx = PendingTransaction::new(tx)?.to_revm_tx_env();
         let eth_res: ExecResultAndState<_> = evm.transact(env.tx)?;
-
+        
         // fetch the access set
         let mut accessed = HashMap::new();
         inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
@@ -2325,10 +2327,30 @@ impl Backend {
                     let entry = writes.entry(address).or_insert(Vec::<U256>::new());
                     if !entry.contains(&change.key) {
                         entry.push(change.key);
-                        println!("write to: {:?} at {:?}: {:?} -> {:?}", address, change.key, change.had_value, change.value);
                     }
                 }
             }
+        }
+
+        println!("{:?}", inspector.transfer);
+
+        let sender_post_state = eth_res.state.get(pending_tx.sender()).unwrap();
+        let coinbase_post_state = eth_res.state.get(&env.evm_env.block_env.beneficiary).unwrap();
+        
+        println!("coinbase_pre: {:?}", coinbase_pre_state);
+        println!("sender_pre: {:?}", sender_pre_state);
+        println!("coinbase_post: {:?}", coinbase_post_state);
+        println!("sender_post: {:?}", sender_post_state);
+
+        // fetch ETH value diffs
+        let mut eth_diffs = HashMap::new();
+        for transfer_operation in inspector.transfer.unwrap().into_transfers() {
+            // deduce from
+            let diff_from = eth_diffs.entry(transfer_operation.from).or_insert(U256::from(0));
+            diff_from.checked_sub(transfer_operation.value);
+
+            let diff_to = eth_diffs.entry(transfer_operation.to).or_insert(U256::from(0));
+            diff_to.saturating_add(transfer_operation.value);
         }
 
         let out = TransactionAccessSimulationResult {
