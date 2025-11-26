@@ -80,7 +80,7 @@ use alloy_rpc_types::{
     },
 };
 use alloy_serde::{OtherFields, WithOtherFields};
-use alloy_signer::Signature;
+use alloy_signer::{Signature};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_trie::{HashBuilder, Nibbles, proof::ProofRetainer};
 use anvil_core::eth::{
@@ -111,12 +111,12 @@ use foundry_evm::{
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use op_alloy_consensus::DEPOSIT_TX_TYPE_ID;
 use op_revm::{
-    OpContext, OpHaltReason, OpTransaction, OpTransactionError, transaction::deposit::DepositTransactionParts
+    OpContext, OpHaltReason, OpTransaction, transaction::deposit::DepositTransactionParts
 };
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use revm::{
     DatabaseCommit, Inspector,
-    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::{EVMError, ExecResultAndState}},
+    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::{ExecResultAndState}},
     context_interface::{
         block::BlobExcessGasAndPrice,
         result::{ExecutionResult, Output, ResultAndState},
@@ -128,14 +128,9 @@ use revm::{
     state::AccountInfo,
 };
 use revm_inspectors::tracing::types::StorageChange;
+use serde::Serialize;
 use std::{
-    collections::BTreeMap,
-    fmt::Debug,
-    io::{Read, Write},
-    ops::Not,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
+    collections::BTreeMap, fmt::Debug, hash::{RandomState}, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
 };
 use storage::{Blockchain, DEFAULT_HISTORY_LIMIT, MinedTransaction};
 use tokio::sync::RwLock as AsyncRwLock;
@@ -184,6 +179,16 @@ impl BlockRequest {
             Self::Number(n) => BlockNumber::Number(n),
         }
     }
+}
+
+/// The storage slots that a transaction accesses and writes to
+#[derive(Debug, Serialize)]
+pub struct TransactionAccessSimulationResult {
+    pub hash: TxHash,
+    pub accesses: HashMap<Address, Vec<U256>, RandomState>,
+    pub writes: HashMap<Address, Vec<U256>, RandomState>,
+    pub success: bool,
+    pub gas_used: u64,
 }
 
 /// Gives access to the [revm::Database]
@@ -2163,9 +2168,11 @@ impl Backend {
     pub async fn simulate_transaction_state_access(
         &self,
         tx: TypedTransaction,
-    ) -> Result<(), BlockchainError> {
+    ) -> Result<TransactionAccessSimulationResult, BlockchainError> {
         let block_number = self.blockchain.storage.read().best_number.saturating_add(1);
         let best_hash = self.blockchain.storage.read().best_hash; // hash of previous block
+
+        let tx_hash = tx.hash();
 
         let db = self.db.read().await;
         let mut cache_db = CacheDB::new(db.current_state());
@@ -2277,7 +2284,7 @@ impl Backend {
         );
 
         env.tx = PendingTransaction::new(tx)?.to_revm_tx_env();
-        let eth_res: Result<ExecResultAndState<_>, EVMError<DatabaseError, OpTransactionError>> = evm.transact(env.tx);
+        let eth_res: ExecResultAndState<_> = evm.transact(env.tx)?;
 
         // fetch the access set
         let mut accessed = HashMap::new();
@@ -2320,11 +2327,15 @@ impl Backend {
             }
         }
 
-        println!("status: {:?}", eth_res.ok().unwrap().result.is_success());
-        println!("writes: {:?}", writes);
-        println!("accessed: {:?}", accessed);
+        let out = TransactionAccessSimulationResult {
+            hash: tx_hash,
+            accesses: accessed,
+            writes: writes,
+            success: eth_res.result.is_success(),
+            gas_used: eth_res.result.gas_used()
+        };
 
-        Ok(())
+        Ok(out)
     }
 
     pub fn build_access_list_with_state(

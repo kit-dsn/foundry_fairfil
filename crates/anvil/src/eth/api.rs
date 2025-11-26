@@ -8,7 +8,7 @@ use crate::{
         backend::{
             self,
             db::SerializableState,
-            mem::{MIN_CREATE_GAS, MIN_TRANSACTION_GAS},
+            mem::{MIN_CREATE_GAS, MIN_TRANSACTION_GAS, TransactionAccessSimulationResult},
             notifications::NewBlockNotifications,
             validate::TransactionValidator,
         },
@@ -1245,7 +1245,7 @@ impl EthApi {
 
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
-    pub async fn anvil_simulate_transaction(&self, tx: Bytes) -> Result<TxHash> {
+    pub async fn anvil_simulate_transaction(&self, tx: Bytes) -> Result<TransactionAccessSimulationResult> {
         node_info!("anvil_simulateTransaction");
         
         // load and parse raw transaction
@@ -1257,12 +1257,10 @@ impl EthApi {
 
         let transaction = TypedTransaction::decode_2718(&mut data)
             .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+                    
+        let res = self.backend.simulate_transaction_state_access(transaction).await?;
 
-        let tx_hash = transaction.hash();
-            
-        self.backend.simulate_transaction_state_access(transaction).await?;
-
-        Ok(tx_hash)
+        Ok(res)
     }
 
     /// Sends signed transaction, returning its receipt.
