@@ -2322,7 +2322,11 @@ impl Backend {
         for (address, change) in state_diffs {
             if let Some(prev_value) = change.had_value {
                 if prev_value != change.value {
-                    writes.entry(address).or_insert(Vec::<U256>::new()).push(change.key);
+                    let entry = writes.entry(address).or_insert(Vec::<U256>::new());
+                    if !entry.contains(&change.key) {
+                        entry.push(change.key);
+                        println!("write to: {:?} at {:?}: {:?} -> {:?}", address, change.key, change.had_value, change.value);
+                    }
                 }
             }
         }
