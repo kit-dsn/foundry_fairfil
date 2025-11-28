@@ -8121,8 +8121,6 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "10.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c0a6e9ccc2ae006f5bed8bd80cd6f8d3832cd55c5e861b9402fdd556098512f"
 dependencies = [
  "auto_impl",
  "either",
