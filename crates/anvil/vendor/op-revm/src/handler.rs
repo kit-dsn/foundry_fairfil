@@ -97,7 +97,7 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<U256, Self::Error> {
         let ctx = evm.ctx();
 
         let basefee = ctx.block().basefee() as u128;
@@ -214,7 +214,7 @@ where
         // we can revert the changes.
         journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
 
-        Ok(())
+        Ok(gas_balance_spending)
     }
 
     fn last_frame_result(
@@ -287,7 +287,7 @@ where
         &self,
         evm: &mut Self::Evm,
         frame_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(U256, u128), Self::Error> {
         let mut additional_refund = U256::ZERO;
 
         if evm.ctx().tx().tx_type() != DEPOSIT_TRANSACTION_TYPE {
@@ -329,12 +329,12 @@ where
         &self,
         evm: &mut Self::Evm,
         frame_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<U256, Self::Error> {
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
         if is_deposit {
-            return Ok(());
+            return Ok(U256::ZERO);
         }
 
         self.mainnet.reward_beneficiary(evm, frame_result)?;
@@ -370,7 +370,7 @@ where
             ctx.journal_mut().balance_incr(recipient, amount)?;
         }
 
-        Ok(())
+        Ok(U256::ZERO)
     }
 
     fn execution_result(

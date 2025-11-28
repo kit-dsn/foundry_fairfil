@@ -34,6 +34,16 @@ pub struct AnvilInspector {
     pub transfer: Option<TransferInspector>,
     /// Collects access lists
     pub access_list: Option<AccessListInspector>,
+    /// Store some information about gas fees
+    pub gas_fees: Option<InspectorGasFeeInformation>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InspectorGasFeeInformation {
+    pub caller_gas_spending: U256,
+    pub caller_gas_refund: U256,
+    pub proposer_reward: U256,
+    pub effective_gas_price: u128,
 }
 
 impl AnvilInspector {
@@ -188,6 +198,15 @@ where
         call_inspectors!([&mut self.tracer, &mut self.transfer], |inspector| {
             Inspector::<CTX, EthInterpreter>::selfdestruct(inspector, contract, target, value)
         });
+    }
+
+    fn gas_calulated(&mut self, caller_gas_spending: U256, caller_gas_refund: U256, proposer_reward: U256, effective_gas_price: u128) {
+        self.gas_fees = Some(InspectorGasFeeInformation {
+            caller_gas_spending,
+            caller_gas_refund,
+            proposer_reward,
+            effective_gas_price
+        })
     }
 }
 

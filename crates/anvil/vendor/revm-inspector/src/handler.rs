@@ -56,9 +56,21 @@ where
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let init_and_floor_gas = self.validate(evm)?;
-        let eip7702_refund = self.pre_execution(evm)? as i64;
+        let (eip7702_refund, gas_balance_spending) = self.pre_execution(evm)?;
         let mut frame_result = self.inspect_execution(evm, &init_and_floor_gas)?;
-        self.post_execution(evm, &mut frame_result, init_and_floor_gas, eip7702_refund)?;
+        let (refund, effective_gas_price, reward) = self.post_execution(evm, &mut frame_result, init_and_floor_gas, eip7702_refund as i64)?;
+        
+        // call new inspector callback to pass over
+        // gas fee usage
+        let inspector = evm.inspector();
+        inspector.gas_calulated(
+            gas_balance_spending,
+            refund,
+            reward, 
+            effective_gas_price
+        );
+
+        
         self.execution_result(evm, frame_result)
     }
 

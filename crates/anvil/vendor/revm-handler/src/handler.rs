@@ -145,10 +145,9 @@ pub trait Handler {
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let init_and_floor_gas = self.validate(evm)?;
-        let eip7702_refund = self.pre_execution(evm)? as i64;
+        let (eip7702_refund, _) = self.pre_execution(evm)?;
         let mut exec_result = self.execution(evm, &init_and_floor_gas)?;
-        self.post_execution(evm, &mut exec_result, init_and_floor_gas, eip7702_refund)?;
-
+        self.post_execution(evm, &mut exec_result, init_and_floor_gas, eip7702_refund as i64)?;
         // Prepare the output
         self.execution_result(evm, exec_result)
     }
@@ -173,12 +172,12 @@ pub trait Handler {
     /// For EIP-7702 transactions, applies the authorization list and delegates successful authorizations.
     /// Returns the gas refund amount from EIP-7702. Authorizations are applied before execution begins.
     #[inline]
-    fn pre_execution(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
-        self.validate_against_state_and_deduct_caller(evm)?;
+    fn pre_execution(&self, evm: &mut Self::Evm) -> Result<(u64, U256), Self::Error> {
+        let gas_balance_spending = self.validate_against_state_and_deduct_caller(evm)?;
         self.load_accounts(evm)?;
 
         let gas = self.apply_eip7702_auth_list(evm)?;
-        Ok(gas)
+        Ok((gas, gas_balance_spending))
     }
 
     /// Creates and executes the initial frame, then processes the execution loop.
@@ -219,16 +218,16 @@ pub trait Handler {
         exec_result: &mut FrameResult,
         init_and_floor_gas: InitialAndFloorGas,
         eip7702_gas_refund: i64,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(U256, u128, U256), Self::Error> {
         // Calculate final refund and add EIP-7702 refund to gas.
         self.refund(evm, exec_result, eip7702_gas_refund);
         // Ensure gas floor is met and minimum floor gas is spent.
         self.eip7623_check_gas_floor(evm, exec_result, init_and_floor_gas);
         // Return unused gas to caller
-        self.reimburse_caller(evm, exec_result)?;
+        let (refund, effective_gas_price) = self.reimburse_caller(evm, exec_result)?;
         // Pay transaction fees to beneficiary
-        self.reward_beneficiary(evm, exec_result)?;
-        Ok(())
+        let reward = self.reward_beneficiary(evm, exec_result)?;
+        Ok((refund, effective_gas_price, reward))
     }
 
     /* VALIDATION */
@@ -277,7 +276,7 @@ pub trait Handler {
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<U256, Self::Error> {
         pre_execution::validate_against_state_and_deduct_caller(evm.ctx())
     }
 
@@ -401,7 +400,7 @@ pub trait Handler {
         &self,
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(U256, u128), Self::Error> {
         post_execution::reimburse_caller(evm.ctx(), exec_result.gas(), U256::ZERO)
             .map_err(From::from)
     }
@@ -412,7 +411,7 @@ pub trait Handler {
         &self,
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<U256, Self::Error> {
         post_execution::reward_beneficiary(evm.ctx(), exec_result.gas()).map_err(From::from)
     }
 

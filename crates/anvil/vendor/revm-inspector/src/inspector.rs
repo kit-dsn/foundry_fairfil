@@ -111,6 +111,17 @@ pub trait Inspector<CTX, INTR: InterpreterTypes = EthInterpreter> {
         let _ = target;
         let _ = value;
     }
+
+    /// Called when a contract has been self-destructed with funds transferred to target.
+    #[inline]
+    fn gas_calulated(&mut self, caller_gas_spending: U256, caller_gas_refund: U256, proposer_reward: U256, effective_gas_price: u128) {
+        println!("general gas_calculated called");
+        let _ = caller_gas_spending;
+        let _ = caller_gas_refund;
+        let _ = proposer_reward;
+        let _ = effective_gas_price;
+    }
+
 }
 
 impl<CTX, INTR: InterpreterTypes, L, R> Inspector<CTX, INTR> for (L, R)

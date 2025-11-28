@@ -113,7 +113,7 @@ pub fn validate_against_state_and_deduct_caller<
     ERROR: From<InvalidTransaction> + From<<CTX::Db as Database>::Error>,
 >(
     context: &mut CTX,
-) -> Result<(), ERROR> {
+) -> Result<U256, ERROR> {
     let basefee = context.block().basefee() as u128;
     let blob_price = context.block().blob_gasprice().unwrap_or_default();
     let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
@@ -173,7 +173,7 @@ pub fn validate_against_state_and_deduct_caller<
     }
 
     journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
-    Ok(())
+    Ok(gas_balance_spending)
 }
 
 /// Apply EIP-7702 auth list and return number gas refund on already created accounts.

@@ -123,7 +123,7 @@ use revm::{
 use revm_inspectors::tracing::types::StorageChange;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap, fmt::Debug, hash::{RandomState}, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
+    any::type_name_of_val, collections::BTreeMap, fmt::Debug, hash::RandomState, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
 };
 use storage::{Blockchain, DEFAULT_HISTORY_LIMIT, MinedTransaction};
 use tokio::sync::RwLock as AsyncRwLock;
@@ -190,9 +190,11 @@ pub struct TransactionAccessSimulationResult {
     // amount of gas used
     pub gas_used: u64,
     // amount of ETH burned (base fee)
-    pub burned_ether: I512,
+    pub burned_ether: U256,
     // amount of ETH transfered to coinbase as priority fee
-    pub priority_fee: I512,
+    pub priority_fee: U256,
+    // the effectively paid gas price
+    pub effective_gas_price : u128,
     // the sender of the transaction
     pub sender: Address,
     // the beneficiary account/miner/coinbase address
@@ -2269,9 +2271,6 @@ impl Backend {
         let pending_tx = PendingTransaction::new(tx)?;
         env.tx = pending_tx.to_revm_tx_env();
 
-        let coinbase_pre_state = db.current_state().0.basic_ref(env.evm_env.block_env.beneficiary)?.unwrap();
-        let sender_pre_state = db.current_state().0.basic_ref(*pending_tx.sender())?.unwrap();
-
         let mut inspector = self.build_inspector();
         let mut evm = self.new_evm_with_inspector_ref(
             &cache_db,
@@ -2347,15 +2346,6 @@ impl Backend {
             }
         }
 
-
-        let sender_post_state = eth_res.state.get(pending_tx.sender()).unwrap();
-        let coinbase_post_state = eth_res.state.get(&env.evm_env.block_env.beneficiary).unwrap();
-
-        println!("coinbase_pre: {:?}", coinbase_pre_state);
-        println!("sender_pre: {:?}", sender_pre_state);
-        println!("coinbase_post: {:?}", coinbase_post_state);
-        println!("sender_post: {:?}", sender_post_state);
-
         // fetch ETH value diffs
         let mut eth_diffs = HashMap::new();
         for transfer_operation in inspector.transfer.unwrap().into_transfers() {
@@ -2368,11 +2358,10 @@ impl Backend {
             *diff_to = diff_to.checked_add(I512::from(transfer_operation.value)).unwrap();
         }
 
-        let sender_a_diff : I512 = I512::from(sender_post_state.info.balance).checked_sub(I512::from(sender_pre_state.balance)).unwrap();
-        let coinbase_a_diff : I512 = I512::from(coinbase_post_state.info.balance).checked_sub(I512::from(coinbase_pre_state.balance)).unwrap();
+        let gas_fees = inspector.gas_fees.unwrap();
 
-        let prio_fees = coinbase_a_diff.checked_sub(*eth_diffs.get(&env.evm_env.block_env.beneficiary).unwrap_or(&I512::ZERO)).unwrap();
-        let burned_fees = eth_diffs.get(pending_tx.sender()).unwrap_or(&I512::ZERO).checked_sub(sender_a_diff).unwrap().checked_sub(prio_fees).unwrap();
+        let prio_fees = gas_fees.proposer_reward;
+        let burned_fees = gas_fees.caller_gas_spending - gas_fees.caller_gas_refund - prio_fees;
 
         let out = TransactionAccessSimulationResult {
             hash: tx_hash,
@@ -2385,6 +2374,7 @@ impl Backend {
             priority_fee: prio_fees,
             sender: *pending_tx.sender(),
             coinbase: env.evm_env.block_env.beneficiary,
+            effective_gas_price: gas_fees.effective_gas_price
         };
 
         Ok(out)

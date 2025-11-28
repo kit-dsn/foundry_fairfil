@@ -33,20 +33,22 @@ pub fn reimburse_caller<CTX: ContextTr>(
     context: &mut CTX,
     gas: &Gas,
     additional_refund: U256,
-) -> Result<(), <CTX::Db as Database>::Error> {
+) -> Result<(U256, u128), <CTX::Db as Database>::Error> {
     let basefee = context.block().basefee() as u128;
     let caller = context.tx().caller();
     let effective_gas_price = context.tx().effective_gas_price(basefee);
 
+    let refund = U256::from(
+        effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
+    );
+
     // Return balance of not spend gas.
     context.journal_mut().balance_incr(
         caller,
-        U256::from(
-            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
-        ) + additional_refund,
+         refund + additional_refund,
     )?;
 
-    Ok(())
+    Ok((refund, effective_gas_price))
 }
 
 /// Rewards the beneficiary with transaction fees.
@@ -54,7 +56,7 @@ pub fn reimburse_caller<CTX: ContextTr>(
 pub fn reward_beneficiary<CTX: ContextTr>(
     context: &mut CTX,
     gas: &Gas,
-) -> Result<(), <CTX::Db as Database>::Error> {
+) -> Result<U256, <CTX::Db as Database>::Error> {
     let beneficiary = context.block().beneficiary();
     let basefee = context.block().basefee() as u128;
     let effective_gas_price = context.tx().effective_gas_price(basefee);
@@ -67,13 +69,15 @@ pub fn reward_beneficiary<CTX: ContextTr>(
         effective_gas_price
     };
 
+    let reward = U256::from(coinbase_gas_price * gas.used() as u128);
+
     // reward beneficiary
     context.journal_mut().balance_incr(
         beneficiary,
-        U256::from(coinbase_gas_price * gas.used() as u128),
+        reward,
     )?;
 
-    Ok(())
+    Ok(reward)
 }
 
 /// Calculate last gas spent and transform internal reason to external.
