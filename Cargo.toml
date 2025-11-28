@@ -380,6 +380,7 @@ rexpect = { git = "https://github.com/rust-cli/rexpect", rev = "2ed0b1898d7edaf6
 revm-handler = { path = "crates/anvil/vendor/revm-handler" }
 revm-inspectors = { path = "crates/anvil/vendor/revm-inspectors" }
 revm-inspector = { path = "crates/anvil/vendor/revm-inspector" }
+op-revm = { path = "crates/anvil/vendor/op-revm" }
 
 ## alloy-core
 # alloy-dyn-abi = { path = "../../alloy-rs/core/crates/dyn-abi" }
