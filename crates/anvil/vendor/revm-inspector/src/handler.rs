@@ -1,4 +1,4 @@
-use crate::{Inspector, InspectorEvmTr, JournalExt};
+use crate::{Inspector, InspectorEvmTr, JournalExt, inspect};
 use context::{result::ExecutionResult, ContextTr, JournalEntry, Transaction};
 use handler::{evm::FrameTr, EvmTr, FrameResult, Handler, ItemOrResult};
 use interpreter::{
@@ -55,14 +55,22 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        let init_and_floor_gas = self.validate(evm)?;
-        let (eip7702_refund, gas_balance_spending) = self.pre_execution(evm)?;
+        
+        
+        let init_and_floor_gas = self.validate(evm)?;        
+        let (eip7702_refund, gas_balance_spending, possible_nonce_changes) = self.pre_execution(evm)?;
         let mut frame_result = self.inspect_execution(evm, &init_and_floor_gas)?;
         let (refund, effective_gas_price, reward) = self.post_execution(evm, &mut frame_result, init_and_floor_gas, eip7702_refund as i64)?;
         
-        // call new inspector callback to pass over
-        // gas fee usage
+        let caller = evm.ctx().tx().caller();
+        let required_nonce = evm.ctx().tx().nonce();
+
         let inspector = evm.inspector();
+        // notify inspector about required nonce for transaction
+        inspector.require_nonce(caller, required_nonce);
+        // notify inspector about possible nonce changes because of EIP 7702
+        inspector.possible_nonces(possible_nonce_changes);
+        // pass gas fee usage to inspector
         inspector.gas_calulated(
             gas_balance_spending,
             refund,

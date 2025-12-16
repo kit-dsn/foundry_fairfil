@@ -122,6 +122,23 @@ pub trait Inspector<CTX, INTR: InterpreterTypes = EthInterpreter> {
         let _ = effective_gas_price;
     }
 
+    /// Called before execution of the transaction with the required
+    /// nonce value of the transaction caller.
+    #[inline]
+    fn require_nonce(&mut self, account: Address, required_nonce: u64) {
+        println!("general require_nonce called");
+        let _ = account;
+        let _ = required_nonce;
+    }
+
+    /// Called before execution of the transaction with the required
+    /// nonce value of the transaction caller.
+    #[inline]
+    fn possible_nonces(&mut self, possible_nonces: Vec<(Address, u64)>) {
+        println!("general possible_nonces called");
+        let _ = possible_nonces;
+    }
+
 }
 
 impl<CTX, INTR: InterpreterTypes, L, R> Inspector<CTX, INTR> for (L, R)

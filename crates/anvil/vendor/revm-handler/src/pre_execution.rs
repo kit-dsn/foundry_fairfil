@@ -13,7 +13,7 @@ use context_interface::{
     Block, Cfg, Database,
 };
 use core::cmp::Ordering;
-use primitives::StorageKey;
+use primitives::{Address, StorageKey};
 use primitives::{eip7702, hardfork::SpecId, KECCAK_EMPTY, U256};
 use state::AccountInfo;
 use std::boxed::Box;
@@ -183,17 +183,18 @@ pub fn apply_eip7702_auth_list<
     ERROR: From<InvalidTransaction> + From<<CTX::Db as Database>::Error>,
 >(
     context: &mut CTX,
-) -> Result<u64, ERROR> {
+) -> Result<(u64, Vec<(Address, u64)>), ERROR> {
     let tx = context.tx();
     // Return if there is no auth list.
     if tx.tx_type() != TransactionType::Eip7702 {
-        return Ok(0);
+        return Ok((0, Vec::new()));
     }
 
     let chain_id = context.cfg().chain_id();
     let (tx, journal) = context.tx_journal_mut();
 
     let mut refunded_accounts = 0;
+    let mut possible_nonce_changes = Vec::new();
     for authorization in tx.authorization_list() {
         // 1. Verify the chain id is either 0 or the chain's current ID.
         let auth_chain_id = authorization.chain_id();
@@ -223,6 +224,10 @@ pub fn apply_eip7702_auth_list<
                 continue;
             }
         }
+
+        // at this point, if the nonce is correct, the authroization is
+        // valid and the account nonce would be incremented.
+        possible_nonce_changes.push((authority, authorization.nonce()));
 
         // 6. Verify the nonce of `authority` is equal to `nonce`. In case `authority` does not exist in the trie, verify that `nonce` is equal to `0`.
         if authorization.nonce() != authority_acc.info.nonce {
@@ -257,5 +262,5 @@ pub fn apply_eip7702_auth_list<
     let refunded_gas =
         refunded_accounts * (eip7702::PER_EMPTY_ACCOUNT_COST - eip7702::PER_AUTH_BASE_COST);
 
-    Ok(refunded_gas)
+    Ok((refunded_gas, possible_nonce_changes))
 }

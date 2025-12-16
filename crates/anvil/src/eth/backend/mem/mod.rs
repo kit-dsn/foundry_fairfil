@@ -199,6 +199,10 @@ pub struct TransactionAccessSimulationResult {
     pub sender: Address,
     // the beneficiary account/miner/coinbase address
     pub coinbase: Address,
+    // the nonce value required for this transaction
+    pub nonces_required: Vec<(Address, u64)>,
+    // the nonce values from authorizations that can issue a nonce bump
+    pub nonces_possible: Vec<(Address, u64)>,
 }
 
 /// Gives access to the [revm::Database]
@@ -2374,7 +2378,9 @@ impl Backend {
             priority_fee: prio_fees,
             sender: *pending_tx.sender(),
             coinbase: env.evm_env.block_env.beneficiary,
-            effective_gas_price: gas_fees.effective_gas_price
+            effective_gas_price: gas_fees.effective_gas_price,
+            nonces_required: inspector.nonces.required_nonces,
+            nonces_possible: inspector.nonces.possible_nonces,
         };
 
         Ok(out)

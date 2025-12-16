@@ -36,6 +36,8 @@ pub struct AnvilInspector {
     pub access_list: Option<AccessListInspector>,
     /// Store some information about gas fees
     pub gas_fees: Option<InspectorGasFeeInformation>,
+    /// Store some information about nonces
+    pub nonces: NonceInformation,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -44,6 +46,12 @@ pub struct InspectorGasFeeInformation {
     pub caller_gas_refund: U256,
     pub proposer_reward: U256,
     pub effective_gas_price: u128,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NonceInformation {
+    pub required_nonces: Vec<(Address, u64)>,
+    pub possible_nonces: Vec<(Address, u64)>,
 }
 
 impl AnvilInspector {
@@ -207,6 +215,14 @@ where
             proposer_reward,
             effective_gas_price
         })
+    }
+
+    fn require_nonce(&mut self, account: Address, required_nonce: u64) {
+        self.nonces.required_nonces.push((account, required_nonce));
+    }
+
+    fn possible_nonces(&mut self, mut possible_nonces: Vec<(Address,u64)>) {
+        self.nonces.possible_nonces.append(&mut possible_nonces);
     }
 }
 
