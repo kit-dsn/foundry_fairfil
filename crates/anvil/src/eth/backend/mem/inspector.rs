@@ -13,7 +13,7 @@ use foundry_evm::{
 };
 use revm::{
     Inspector,
-    context::ContextTr,
+    context::{ContextTr, JournalTr},
     inspector::JournalExt,
     interpreter::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
@@ -188,6 +188,9 @@ where
     }
 
     fn create(&mut self, ecx: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        let nonce = ecx.journal_mut().load_account(inputs.caller).ok()?.info.nonce;
+        self.nonces.possible_nonces.push((inputs.created_address(nonce), 0));
+
         call_inspectors!(
             #[ret]
             [&mut self.tracer, &mut self.transfer, &mut self.access_list],
