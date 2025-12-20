@@ -185,8 +185,10 @@ pub struct TransactionAccessSimulationResult {
     pub writes: HashMap<Address, Vec<U256>, RandomState>,
     // all difference in ETH balance that originate from code execution (no fees)
     pub transfer_diffs: HashMap<Address, I512, RandomState>,
-    // if the transaction was successful
+    // if the transaction was successful and is includable
     pub success: bool,
+    // list of validity errors
+    pub errors: Vec<InvalidTransactionError>,
     // amount of gas used
     pub gas_used: u64,
     // amount of ETH burned (base fee)
@@ -2199,6 +2201,9 @@ impl Backend {
         // disable nonce checks
         env.evm_env.cfg_env.disable_nonce_check = true;
 
+        // disable balance checks
+        env.evm_env.cfg_env.disable_balance_check = true;
+
         if self.fetch_mix_hash {
             env.evm_env.block_env.prevrandao = self
                 .get_fork()
@@ -2273,6 +2278,10 @@ impl Backend {
         }
 
         let pending_tx = PendingTransaction::new(tx)?;
+
+        // perform validity checks
+        let errors = validate_transation_includability(&pending_tx, &self.get_account(*pending_tx.sender()).await?, &env);
+
         env.tx = pending_tx.to_revm_tx_env();
 
         let mut inspector = self.build_inspector();
@@ -2304,8 +2313,14 @@ impl Backend {
             &mut inspector,
         );
 
-        let eth_res: ExecResultAndState<_> = evm.transact(env.tx)?;
+        let eth_res_res  = evm.transact(env.tx);
         
+        if eth_res_res.is_err() {
+            println!("evm.transact errored: {:?}", eth_res_res);
+            return Err(eth_res_res.err().unwrap().into());
+        }
+        let eth_res = eth_res_res.unwrap();
+
         // fetch the access set
         let mut accessed = HashMap::new();
         inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
@@ -2362,7 +2377,7 @@ impl Backend {
             *diff_to = diff_to.checked_add(I512::from(transfer_operation.value)).unwrap();
         }
 
-        let gas_fees = inspector.gas_fees.unwrap();
+        let gas_fees = inspector.gas_fees.unwrap_or_default();
 
         let prio_fees = gas_fees.proposer_reward;
         let burned_fees = gas_fees.caller_gas_spending - gas_fees.caller_gas_refund - prio_fees;
@@ -2372,7 +2387,8 @@ impl Backend {
             accesses: accessed,
             writes: writes,
             transfer_diffs: eth_diffs,
-            success: eth_res.result.is_success(),
+            success: errors.len() == 0 && eth_res.result.is_success(),
+            errors: errors,
             gas_used: eth_res.result.gas_used(),
             burned_ether: burned_fees,
             priority_fee: prio_fees,
@@ -4066,6 +4082,154 @@ impl TransactionValidator for Backend {
         Ok(())
     }
 }
+
+/// This method is adapted from `validate_pool_transaction_for`
+/// and performs validity checks on the transaction to confirm
+/// that it is includable.
+fn validate_transation_includability(
+    pending: &PendingTransaction,
+    account: &AccountInfo,
+    env: &Env,
+) -> Vec<InvalidTransactionError> {
+    let tx = &pending.transaction;
+    let mut errors : Vec<InvalidTransactionError> = vec![];
+
+
+    if let Some(tx_chain_id) = tx.chain_id() {
+        if env.evm_env.chainid() != tx_chain_id {
+            if let Some(legacy) = tx.as_legacy() {
+                // <https://github.com/ethereum/EIPs/blob/master/EIPS/eip-155.md>
+                if env.evm_env.cfg_env.spec >= SpecId::SPURIOUS_DRAGON
+                    && legacy.tx().chain_id.is_none()
+                {
+                    errors.push(InvalidTransactionError::IncompatibleEIP155);
+                }
+            } else {
+                errors.push(InvalidTransactionError::InvalidChainId);
+            }
+        }
+    }
+
+    // Nonce validation
+    let is_deposit_tx =
+        matches!(&pending.transaction.transaction, TypedTransaction::Deposit(_));
+    let nonce = tx.nonce();
+    if nonce < account.nonce && !is_deposit_tx {
+        errors.push(InvalidTransactionError::NonceTooLow);
+    }
+
+    // EIP-4844 structural validation
+    if env.evm_env.cfg_env.spec >= SpecId::CANCUN && tx.transaction.is_eip4844() {
+        // Heavy (blob validation) checks
+        let blob_tx = match &tx.transaction {
+            TypedTransaction::EIP4844(tx) => tx.tx(),
+            _ => unreachable!(),
+        };
+
+        let blob_count = blob_tx.tx().blob_versioned_hashes.len();
+
+        // Ensure there are blob hashes.
+        if blob_count == 0 {
+            errors.push(InvalidTransactionError::NoBlobHashes);
+        }
+
+        // Ensure the tx does not exceed the max blobs per block.
+        let max_blob_count = BlobParams::prague().max_blob_count as usize;
+        if blob_count > max_blob_count {
+            errors.push(InvalidTransactionError::TooManyBlobs(blob_count, max_blob_count));
+        }
+
+        // Do not check for BlobValidity, since we do not have any blobs in our use case
+
+        // if let Err(err) = blob_tx.validate(EnvKzgSettings::default().get())
+        // {
+        //     errors.push(InvalidTransactionError::BlobTransactionValidationError(err));
+        // }
+    }
+
+    // Balance and fee related checks
+    if true {
+        // Gas limit validation
+        if tx.gas_limit() < MIN_TRANSACTION_GAS as u64 {
+            errors.push(InvalidTransactionError::GasTooLow);
+        }
+
+        // Check tx gas limit against block gas limit, if block gas limit is set.
+        if tx.gas_limit() > env.evm_env.block_env.gas_limit
+        {
+            errors.push(InvalidTransactionError::GasTooHigh(ErrDetail {
+                detail: String::from("tx.gas_limit > env.block.gas_limit"),
+            }));
+        }
+
+        // Check tx gas limit against tx gas limit cap (Osaka hard fork and later).
+        if env.evm_env.cfg_env.tx_gas_limit_cap.is_none()
+            && tx.gas_limit() > env.evm_env.cfg_env().tx_gas_limit_cap()
+        {
+            errors.push(InvalidTransactionError::GasTooHigh(ErrDetail {
+                detail: String::from("tx.gas_limit > env.cfg.tx_gas_limit_cap"),
+            }));
+        }
+
+        // EIP-1559 fee validation (London hard fork and later).
+        if env.evm_env.cfg_env.spec >= SpecId::LONDON {
+            if tx.gas_price() < env.evm_env.block_env.basefee.into() && !is_deposit_tx {
+                errors.push(InvalidTransactionError::FeeCapTooLow);
+            }
+
+            if let (Some(max_priority_fee_per_gas), Some(max_fee_per_gas)) =
+                (tx.essentials().max_priority_fee_per_gas, tx.essentials().max_fee_per_gas)
+                && max_priority_fee_per_gas > max_fee_per_gas
+            {
+                errors.push(InvalidTransactionError::TipAboveFeeCap);
+            }
+        }
+
+        // EIP-4844 blob fee validation
+        if env.evm_env.cfg_env.spec >= SpecId::CANCUN
+            && tx.transaction.is_eip4844()
+            && let Some(max_fee_per_blob_gas) = tx.essentials().max_fee_per_blob_gas
+            && let Some(blob_gas_and_price) = &env.evm_env.block_env.blob_excess_gas_and_price
+            && max_fee_per_blob_gas < blob_gas_and_price.blob_gasprice
+        {
+            errors.push(InvalidTransactionError::BlobFeeCapTooLow);
+        }
+
+        let max_cost = tx.max_cost();
+        let value = tx.value();
+        match &tx.transaction {
+            TypedTransaction::Deposit(deposit_tx) => {
+                // Deposit transactions
+                // https://specs.optimism.io/protocol/deposits.html#execution
+                // 1. no gas cost check required since already have prepaid gas from L1
+                // 2. increment account balance by deposited amount before checking for
+                //    sufficient funds `tx.value <= existing account value + deposited value`
+                if value > account.balance + U256::from(deposit_tx.mint) {
+                    errors.push(InvalidTransactionError::InsufficientFunds);
+                }
+            }
+            _ => {
+                // check sufficient funds: `gas * price + value`
+                let req_funds_res =
+                    max_cost.checked_add(value.saturating_to()).ok_or_else(|| {
+                        InvalidTransactionError::InsufficientFunds
+                    });
+                
+                match req_funds_res {
+                    Ok(req_funds) => {
+                        if account.balance < U256::from(req_funds) {
+                            errors.push(InvalidTransactionError::InsufficientFunds);
+                        }
+                    },
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+    }
+    
+    errors
+}
+
 
 /// Creates a `AnyRpcTransaction` as it's expected for the `eth` RPC api from storage data
 pub fn transaction_build(
