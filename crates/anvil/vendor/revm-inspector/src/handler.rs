@@ -1,4 +1,4 @@
-use crate::{Inspector, InspectorEvmTr, JournalExt, inspect};
+use crate::{Inspector, InspectorEvmTr, JournalExt};
 use context::{result::ExecutionResult, ContextTr, JournalEntry, Transaction};
 use handler::{evm::FrameTr, EvmTr, FrameResult, Handler, ItemOrResult};
 use interpreter::{

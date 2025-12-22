@@ -267,8 +267,8 @@ impl EthApi {
             EthRequest::AnvilAddTransaction(tx) => {
                 self.anvil_add_transaction(tx).await.to_rpc_result()
             }
-            EthRequest::SimulateTransaction(tx) => {
-                self.anvil_simulate_transaction(tx).await.to_rpc_result()
+            EthRequest::SimulateTransaction(txs) => {
+                self.anvil_simulate_transaction(txs).await.to_rpc_result()
             }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
@@ -1245,21 +1245,25 @@ impl EthApi {
 
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
-    pub async fn anvil_simulate_transaction(&self, tx: Bytes) -> Result<TransactionAccessSimulationResult> {
+    pub async fn anvil_simulate_transaction(&self, txs: Vec<Bytes>) -> Result<Vec<TransactionAccessSimulationResult>> {
         node_info!("anvil_simulateTransaction");
         
-        // load and parse raw transaction
-        // heavily inspired by send_raw_transaction
-        let mut data = tx.as_ref();
-        if data.is_empty() {
-            return Err(BlockchainError::EmptyRawTransactionData);
+        let mut parsed_txs = vec![];
+        for tx in txs {
+            // load and parse raw transaction
+            // heavily inspired by send_raw_transaction
+            let mut data = tx.as_ref();
+            if data.is_empty() {
+                return Err(BlockchainError::EmptyRawTransactionData);
+            }
+
+            let transaction = TypedTransaction::decode_2718(&mut data)
+                .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+            parsed_txs.push(transaction);
         }
-
-        let transaction = TypedTransaction::decode_2718(&mut data)
-            .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
-                    
-        let res = self.backend.simulate_transaction_state_access(transaction).await?;
-
+               
+        let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
         Ok(res)
     }
 

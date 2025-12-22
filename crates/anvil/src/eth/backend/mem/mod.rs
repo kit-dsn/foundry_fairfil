@@ -115,7 +115,7 @@ use op_revm::{
 };
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use revm::{
-    DatabaseCommit, Inspector, context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv, result::ExecResultAndState}, context_interface::{
+    DatabaseCommit, Inspector, context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv}, context_interface::{
         block::BlobExcessGasAndPrice,
         result::{ExecutionResult, Output, ResultAndState},
     }, database::{CacheDB, DbAccount, WrapDatabaseRef}, interpreter::InstructionResult, precompile::{PrecompileSpecId, Precompiles}, primitives::{KECCAK_EMPTY, hardfork::SpecId}, state::AccountInfo
@@ -123,7 +123,7 @@ use revm::{
 use revm_inspectors::tracing::types::StorageChange;
 use serde::Serialize;
 use std::{
-    any::type_name_of_val, collections::BTreeMap, fmt::Debug, hash::RandomState, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
+    collections::BTreeMap, fmt::Debug, hash::RandomState, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
 };
 use storage::{Blockchain, DEFAULT_HISTORY_LIMIT, MinedTransaction};
 use tokio::sync::RwLock as AsyncRwLock;
@@ -2183,12 +2183,10 @@ impl Backend {
 
     pub async fn simulate_transaction_state_access(
         &self,
-        tx: TypedTransaction,
-    ) -> Result<TransactionAccessSimulationResult, BlockchainError> {
+        txs: Vec<TypedTransaction>,
+    ) -> Result<Vec<TransactionAccessSimulationResult>, BlockchainError> {
         let block_number = self.blockchain.storage.read().best_number.saturating_add(1);
         let best_hash = self.blockchain.storage.read().best_hash; // hash of previous block
-
-        let tx_hash = tx.hash();
 
         let db = self.db.read().await;
         let mut cache_db = CacheDB::new(db.current_state());
@@ -2277,13 +2275,6 @@ impl Backend {
             env.evm_env.block_env.timestamp = U256::from(self.time.next_timestamp());
         }
 
-        let pending_tx = PendingTransaction::new(tx)?;
-
-        // perform validity checks
-        let errors = validate_transation_includability(&pending_tx, &self.get_account(*pending_tx.sender()).await?, &env);
-
-        env.tx = pending_tx.to_revm_tx_env();
-
         let mut inspector = self.build_inspector();
         let mut evm = self.new_evm_with_inspector_ref(
             &cache_db,
@@ -2302,102 +2293,117 @@ impl Backend {
             cache_db.commit(eip4788_result.state);
         }
 
-        let mut inspector = self.build_inspector()
-            .with_access_list_inspector()
-            .with_steps_tracing()
-            .with_transfers();
+        let mut out = vec![];
+        // iterate over all transactions and execute them in order
+        for tx in txs {
+            let tx_hash = tx.hash();
+            let pending_tx = PendingTransaction::new(tx)?;
 
-        evm = self.new_evm_with_inspector_ref(
-            &cache_db,
-            &env,
-            &mut inspector,
-        );
+            // perform validity checks
+            let sender_acc = cache_db.load_account(*pending_tx.sender()).expect("could not load account");
+            let errors = validate_transation_includability(&pending_tx, &sender_acc.info, &env);
 
-        let eth_res_res  = evm.transact(env.tx);
-        
-        if eth_res_res.is_err() {
-            println!("evm.transact errored: {:?}", eth_res_res);
-            return Err(eth_res_res.err().unwrap().into());
-        }
-        let eth_res = eth_res_res.unwrap();
+            env.tx = pending_tx.to_revm_tx_env();
 
-        // fetch the access set
-        let mut accessed = HashMap::new();
-        inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
-            b.iter().for_each(|key| {
-                accessed.entry(*a).or_insert(Vec::<U256>::new()).push((*key as FixedBytes<32>).into())
+            let mut inspector = self.build_inspector()
+                .with_access_list_inspector()
+                .with_steps_tracing()
+                .with_transfers();
+
+            evm = self.new_evm_with_inspector_ref(
+                &cache_db,
+                &env,
+                &mut inspector,
+            );
+
+            let eth_res_res  = evm.transact(pending_tx.to_revm_tx_env());
+            if eth_res_res.is_err() {
+                println!("evm.transact errored: {:?}", eth_res_res);
+                return Err(eth_res_res.err().unwrap().into());
+            }
+
+            let eth_res = eth_res_res.unwrap();
+            cache_db.commit(eth_res.state);
+
+            // fetch the access set
+            let mut accessed = HashMap::new();
+            inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
+                b.iter().for_each(|key| {
+                    accessed.entry(*a).or_insert(Vec::<U256>::new()).push((*key as FixedBytes<32>).into())
+                });
             });
-        });
 
-        let state_diffs: Vec<(Address, Box<StorageChange>)> = inspector.tracer.unwrap()
-            .traces()
-            .nodes()
-            .iter()
-            .map(|n| 
-                n.trace.steps.iter().map(|s| {
-                    if s.storage_change.is_none() {
+            let state_diffs: Vec<(Address, Box<StorageChange>)> = inspector.tracer.unwrap()
+                .traces()
+                .nodes()
+                .iter()
+                .map(|n| 
+                    n.trace.steps.iter().map(|s| {
+                        if s.storage_change.is_none() {
+                            None
+                        } else {
+                            Some((n.execution_address(), s.storage_change.clone()))
+                        }
+                    })
+                .collect::<Vec<_>>())
+                .flatten().flatten()
+                .flat_map(|i| {
+                    if i.1.is_none() {
                         None
                     } else {
-                        Some((n.execution_address(), s.storage_change.clone()))
+                        Some((i.0, i.1.unwrap()))
                     }
                 })
-            .collect::<Vec<_>>())
-            .flatten().flatten()
-            .flat_map(|i| {
-                if i.1.is_none() {
-                    None
-                } else {
-                    Some((i.0, i.1.unwrap()))
-                }
-            })
-            .collect();
+                .collect();
 
-        // fetch the write set
-        let mut writes = HashMap::new();
-        for (address, change) in state_diffs {
-            if let Some(prev_value) = change.had_value {
-                if prev_value != change.value {
-                    let entry = writes.entry(address).or_insert(Vec::<U256>::new());
-                    if !entry.contains(&change.key) {
-                        entry.push(change.key);
+            // fetch the write set
+            let mut writes = HashMap::new();
+            for (address, change) in state_diffs {
+                if let Some(prev_value) = change.had_value {
+                    if prev_value != change.value {
+                        let entry = writes.entry(address).or_insert(Vec::<U256>::new());
+                        if !entry.contains(&change.key) {
+                            entry.push(change.key);
+                        }
                     }
                 }
             }
+
+            // fetch ETH value diffs
+            let mut eth_diffs = HashMap::new();
+            for transfer_operation in inspector.transfer.unwrap().into_transfers() {
+                // deduce from
+                let diff_from = eth_diffs.entry(transfer_operation.from).or_insert(I512::ZERO);
+                *diff_from = diff_from.checked_sub(I512::from(transfer_operation.value)).unwrap();
+
+                // increment to
+                let diff_to = eth_diffs.entry(transfer_operation.to).or_insert(I512::ZERO);
+                *diff_to = diff_to.checked_add(I512::from(transfer_operation.value)).unwrap();
+            }
+
+            let gas_fees = inspector.gas_fees.unwrap_or_default();
+
+            let prio_fees = gas_fees.proposer_reward;
+            let burned_fees = gas_fees.caller_gas_spending - gas_fees.caller_gas_refund - prio_fees;
+
+            let tx_res = TransactionAccessSimulationResult {
+                hash: tx_hash,
+                accesses: accessed,
+                writes: writes,
+                transfer_diffs: eth_diffs,
+                success: errors.len() == 0 && eth_res.result.is_success(),
+                errors: errors,
+                gas_used: eth_res.result.gas_used(),
+                burned_ether: burned_fees,
+                priority_fee: prio_fees,
+                sender: *pending_tx.sender(),
+                coinbase: env.evm_env.block_env.beneficiary,
+                effective_gas_price: gas_fees.effective_gas_price,
+                nonces_required: inspector.nonces.required_nonces,
+                nonces_possible: inspector.nonces.possible_nonces,
+            };
+            out.push(tx_res);
         }
-
-        // fetch ETH value diffs
-        let mut eth_diffs = HashMap::new();
-        for transfer_operation in inspector.transfer.unwrap().into_transfers() {
-            // deduce from
-            let diff_from = eth_diffs.entry(transfer_operation.from).or_insert(I512::ZERO);
-            *diff_from = diff_from.checked_sub(I512::from(transfer_operation.value)).unwrap();
-
-            // increment to
-            let diff_to = eth_diffs.entry(transfer_operation.to).or_insert(I512::ZERO);
-            *diff_to = diff_to.checked_add(I512::from(transfer_operation.value)).unwrap();
-        }
-
-        let gas_fees = inspector.gas_fees.unwrap_or_default();
-
-        let prio_fees = gas_fees.proposer_reward;
-        let burned_fees = gas_fees.caller_gas_spending - gas_fees.caller_gas_refund - prio_fees;
-
-        let out = TransactionAccessSimulationResult {
-            hash: tx_hash,
-            accesses: accessed,
-            writes: writes,
-            transfer_diffs: eth_diffs,
-            success: errors.len() == 0 && eth_res.result.is_success(),
-            errors: errors,
-            gas_used: eth_res.result.gas_used(),
-            burned_ether: burned_fees,
-            priority_fee: prio_fees,
-            sender: *pending_tx.sender(),
-            coinbase: env.evm_env.block_env.beneficiary,
-            effective_gas_price: gas_fees.effective_gas_price,
-            nonces_required: inspector.nonces.required_nonces,
-            nonces_possible: inspector.nonces.possible_nonces,
-        };
 
         Ok(out)
     }
@@ -4116,6 +4122,9 @@ fn validate_transation_includability(
     let nonce = tx.nonce();
     if nonce < account.nonce && !is_deposit_tx {
         errors.push(InvalidTransactionError::NonceTooLow);
+    }
+    if nonce > account.nonce {
+        errors.push(InvalidTransactionError::NonceTooHigh);
     }
 
     // EIP-4844 structural validation
