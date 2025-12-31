@@ -197,6 +197,8 @@ pub struct TransactionAccessSimulationResult {
     pub priority_fee: U256,
     // the effectively paid gas price
     pub effective_gas_price : u128,
+    // the maximum gas costs (gas limit * effective gas price + blob gas)
+    pub max_gas_cost : u128,
     // the sender of the transaction
     pub sender: Address,
     // the beneficiary account/miner/coinbase address
@@ -2399,6 +2401,7 @@ impl Backend {
                 sender: *pending_tx.sender(),
                 coinbase: env.evm_env.block_env.beneficiary,
                 effective_gas_price: gas_fees.effective_gas_price,
+                max_gas_cost: pending_tx.transaction.max_cost(),
                 nonces_required: inspector.nonces.required_nonces,
                 nonces_possible: inspector.nonces.possible_nonces,
             };
