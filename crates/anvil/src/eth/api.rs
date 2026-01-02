@@ -270,6 +270,9 @@ impl EthApi {
             EthRequest::SimulateTransaction(txs) => {
                 self.anvil_simulate_transaction(txs).await.to_rpc_result()
             }
+            EthRequest::CyclingHighest(batches) => {
+                self.anvil_cycling_highest(batches).await.to_rpc_result()
+            }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
                 .await
@@ -1265,6 +1268,35 @@ impl EthApi {
                
         let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
         Ok(res)
+    }
+
+    /// Handler for ETH RPC call: `anvil_cyclingHighest`
+    pub async fn anvil_cycling_highest(&self, batches: Vec<Vec<Bytes>>) -> Result<()> {
+        node_info!("anvil_cyclingHighest");
+        
+        let mut parsed_batches: Vec<Vec<TypedTransaction>> = vec![];
+        for batch in batches {
+            let mut parsed_txs = vec![];
+            for tx in batch {
+                // load and parse raw transaction
+                // heavily inspired by send_raw_transaction
+                let mut data = tx.as_ref();
+                if data.is_empty() {
+                    return Err(BlockchainError::EmptyRawTransactionData);
+                }
+
+                let transaction = TypedTransaction::decode_2718(&mut data)
+                    .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+                parsed_txs.push(transaction);
+            }
+
+            parsed_batches.push(parsed_txs);
+        }
+        
+        self.backend.concurrent_proposers_cycling_highest(parsed_batches).await?;
+
+        Ok(())
     }
 
     /// Sends signed transaction, returning its receipt.

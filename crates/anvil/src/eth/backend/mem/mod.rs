@@ -134,6 +134,7 @@ pub mod in_memory_db;
 pub mod inspector;
 pub mod state;
 pub mod storage;
+pub mod concurrent_proposer;
 
 /// Helper trait that combines revm::DatabaseRef with Debug.
 /// This is needed because alloy-evm requires Debug on Database implementations.

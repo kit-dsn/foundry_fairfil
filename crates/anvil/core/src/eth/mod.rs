@@ -162,6 +162,12 @@ pub enum EthRequest {
     SimulateTransaction(
         Vec<Bytes>
     ),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_cyclingHighest", with = "sequence")]
+    CyclingHighest(
+        Vec<Vec<Bytes>>
+    ),
     
     #[serde(rename = "eth_call")]
     EthCall(
