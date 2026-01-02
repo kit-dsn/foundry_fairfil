@@ -153,6 +153,7 @@ pub enum EthRequest {
     #[serde(rename = "eth_sendRawTransactionSync", with = "sequence")]
     EthSendRawTransactionSync(Bytes),
 
+    /// non-standard endpoint
     #[serde(rename = "anvil_addTx", with = "sequence")]
     AnvilAddTransaction(Bytes),
 
