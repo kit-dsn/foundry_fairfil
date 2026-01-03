@@ -2198,6 +2198,8 @@ impl Backend {
 
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
+        env.evm_env.block_env.number = 
+            env.evm_env.block_env.number.saturating_add(U256::from(1));
 
         // disable nonce checks
         env.evm_env.cfg_env.disable_nonce_check = true;
