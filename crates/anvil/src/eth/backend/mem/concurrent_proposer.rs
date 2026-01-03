@@ -1,81 +1,202 @@
-use std::collections::HashSet;
+use std::{collections::HashMap, sync::Arc};
 
-use alloy_primitives::{FixedBytes, U256};
+use crate::eth::{
+    backend::{
+        db::StateDb,
+        env::Env,
+        executor::TransactionExecutionOutcome,
+        mem::{Backend, TransactionAccessSimulationResult, inspector::AnvilInspector, storage::MinedBlockOutcome},
+        validate::TransactionValidator,
+    },
+    error::BlockchainError,
+    pool::transactions::PoolTransaction,
+};
 use alloy_evm::Evm;
+use alloy_primitives::{FixedBytes, U256};
 use anvil_core::eth::transaction::{PendingTransaction, TypedTransaction};
-use revm::{context::Transaction, database::CacheDB, primitives::hardfork::SpecId, DatabaseCommit};
-use crate::eth::{backend::{db::StateDb, env::Env, mem::Backend}, error::BlockchainError};
+use revm::{DatabaseCommit, context::Transaction, database::CacheDB, primitives::hardfork::SpecId};
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub struct CyclingHighestOutput {
+    /// The block (number) that was mined
+    pub block_number: u64,
+    /// the mined block
+    pub block: MinedBlockOutcome,
+    /// simulation of all included transactions
+    pub block_sim : Vec<TransactionAccessSimulationResult>,
+    /// transaction (hashes) that failed and were not included into the block
+    pub failed_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)>,
+    /// distribution of gas usage per batch (proposer)
+    pub gas_usage_per_batch: HashMap<usize, u128>,
+}
 
 impl Backend {
     pub async fn concurrent_proposers_cycling_highest(
         &self,
         mut batches: Vec<Vec<TypedTransaction>>,
-    ) -> Result<(), BlockchainError> {
-        
+    ) -> Result<CyclingHighestOutput, BlockchainError> {
         // ensure that all batches are valid, i.e., executable
         for (batch_idx, batch) in batches.iter().enumerate() {
             if !self.test_batch(batch.to_vec()).await? {
                 // there is one invalid batch
-                return Err(BlockchainError::Message(format!("batch {} invalid", batch_idx)))
+                return Err(BlockchainError::Message(format!("batch {} invalid", batch_idx)));
             }
         }
-        
+
+        let number_batches = batches.len() as u64; // number of batches = batch proposers
+
         // let's build the super-block!
+
+        // contains the transactions of the superblock
         let mut block: Vec<TypedTransaction> = vec![];
-        let mut included_txs: HashSet<FixedBytes<32>> = HashSet::new();
+        // map of all included transactions and the amount of gas used
+        let mut included_txs: HashMap<FixedBytes<32>, u64> = HashMap::new();
+        // maps each batch proposer to the amount of gas it has 'contributed' to (actual gas usage, not gas limit)!
+        let mut gas_usage_per_proposer: HashMap<usize, u128> = HashMap::new();
+        // running value for block gas usage
+        let mut gas_used = 0 as u64;
+        // running value for block blob gas usage
+        let mut blob_gas_used = 0 as u64;
+        // list of failing transactions with reason
+        let mut failing_tx: Vec<(FixedBytes<32>, TransactionExecutionOutcome)> = vec![];
 
         let (evm_env, mut evm_db) = self.build_evm_environment().await?;
 
         loop {
-            batches = cleanup_batches_for_inclusion(batches, &included_txs);
+            batches =
+                cleanup_batches_for_inclusion(batches, &included_txs, &mut gas_usage_per_proposer);
 
-            let heads = get_heads(&batches);
+            let heads = get_heads(
+                &batches,
+                &gas_usage_per_proposer,
+                (evm_env.evm_env.block_env.gas_limit / 4 / number_batches) as u128,
+            );
             if heads.is_empty() {
-                break
+                break;
             }
 
-            let mut inspector = self.build_inspector();
-            let mut evm = self.new_evm_with_inspector_ref(
-                &evm_db,
-                &evm_env,
-                &mut inspector,
-            );
-            
+            // the next transaction is the transaction with the highest effective gas price
+            // if multiple transactions fullfil this criteria, `max_by_key` takes the last one
+            // i.e., from the highest batch proposer
             let winning_tx = heads.iter().max_by_key(|t| {
                 // get the effective gas price of transactions
-                PendingTransaction::new((*t).clone()).unwrap().to_revm_tx_env().effective_gas_price(evm_env.evm_env.block_env.basefee as u128);
+                PendingTransaction::new((*t).clone())
+                    .unwrap()
+                    .to_revm_tx_env()
+                    .effective_gas_price(evm_env.evm_env.block_env.basefee as u128);
             });
 
             match winning_tx {
                 None => {
-                    break
+                    // no more transactions left, break out of the loop
+                    break;
                 }
                 Some(tx) => {
-                    // let's try to include that transaction!
-                    println!("winning tx: {}", tx.hash());
+                    // let's try to run that transaction!
 
                     let pending_tx = PendingTransaction::new(tx.clone()).unwrap();
-                    included_txs.insert(*pending_tx.hash());
 
-                    let transact_res  = evm.transact(pending_tx.to_revm_tx_env());
+                    // check includability
+                    let max_block_gas = gas_used.saturating_add(pending_tx.transaction.gas_limit());
+                    if max_block_gas > evm_env.evm_env.block_env.gas_limit {
+                        // transaction cannot be included because of block gas limit
+
+                        // insert the transaction to `included_txs` so that it gets cleaned up
+                        // in all batches in the next loop
+                        included_txs.insert(*pending_tx.hash(), 0);
+                        failing_tx.push((
+                            *pending_tx.hash(),
+                            TransactionExecutionOutcome::BlockGasExhausted(Arc::new(
+                                PoolTransaction::new(pending_tx),
+                            )),
+                        ));
+                        continue;
+                    }
+
+                    let max_blob_gas = blob_gas_used
+                        .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
+                    if max_blob_gas > self.blob_params().max_blob_gas_per_block() {
+                        // transaction cannot be included because of blob gas limit
+
+                        // insert the transaction to `included_txs` so that it gets cleaned up
+                        // in all batches in the next loop
+                        included_txs.insert(*pending_tx.hash(), 0);
+                        failing_tx.push((
+                            *pending_tx.hash(),
+                            TransactionExecutionOutcome::BlobGasExhausted(Arc::new(
+                                PoolTransaction::new(pending_tx),
+                            )),
+                        ));
+                        continue;
+                    }
+
+                    // perform validity checks
+                    let sender_acc =
+                        evm_db.load_account(*pending_tx.sender()).expect("could not load account");
+                    let valid =
+                        self.validate_pool_transaction_for(&pending_tx, &sender_acc.info, &evm_env);
+                    if let Err(e) = valid {
+                        // transaction is not includable (anymore)
+
+                        // insert the transaction to `included_txs` so that it gets cleaned up
+                        // in all batches in the next loop
+                        included_txs.insert(*pending_tx.hash(), 0);
+                        failing_tx.push((
+                            *pending_tx.hash(),
+                            TransactionExecutionOutcome::Invalid(
+                                Arc::new(PoolTransaction::new(pending_tx)),
+                                e,
+                            ),
+                        ));
+                        continue;
+                    }
+
+                    // execute transaction
+                    let mut inspector = AnvilInspector::default();
+                    let mut evm =
+                        self.new_evm_with_inspector_ref(&evm_db, &evm_env, &mut inspector);
+                    let transact_res = evm.transact(pending_tx.to_revm_tx_env());
                     match transact_res {
                         Err(_) => {
                             // failed!
-                            println!("transaction failed.");
+                            println!("tx failed {}", pending_tx.hash());
+                            included_txs.insert(*pending_tx.hash(), 0);
                         }
                         Ok(result_state) => {
                             // we executed the transaction successfully!
                             block.push(tx.clone());
                             evm_db.commit(result_state.state);
+                            included_txs.insert(*pending_tx.hash(), result_state.result.gas_used());
 
-                            println!("succeeded");
+                            gas_used = gas_used.saturating_add(result_state.result.gas_used());
+                            blob_gas_used = blob_gas_used
+                                .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0))
                         }
                     }
                 }
             }
         }
 
-        Ok(())
+        let pool_transactions: Vec<Arc<PoolTransaction>> = block
+            .iter()
+            .map(|t| Arc::new(PoolTransaction::new(PendingTransaction::new(t.clone()).unwrap())))
+            .collect();
+
+        // run a simulation of the block
+        let block_simulation = self.simulate_transaction_state_access(block).await?;
+
+        // actually build the new block
+
+        let mined_block_outcome = self.do_mine_block(pool_transactions).await;
+
+        Ok(CyclingHighestOutput {
+            block_number: mined_block_outcome.block_number,
+            block: mined_block_outcome,
+            block_sim: block_simulation,
+            failed_transactions: failing_tx,
+            gas_usage_per_batch: gas_usage_per_proposer,
+        })
     }
 
     async fn test_batch(&self, batch: Vec<TypedTransaction>) -> Result<bool, BlockchainError> {
@@ -86,24 +207,24 @@ impl Backend {
                 return Ok(false);
             }
         }
-        
+
         Ok(true)
     }
 
     async fn build_evm_environment(&self) -> Result<(Env, CacheDB<StateDb>), BlockchainError> {
         let db = self.db.read().await;
         let mut cache_db = CacheDB::new(db.current_state());
-        
+
         let mut env = self.env.read().clone();
 
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
 
         // disable nonce checks
-        env.evm_env.cfg_env.disable_nonce_check = true;
+        // env.evm_env.cfg_env.disable_nonce_check = false;
 
         // disable balance checks
-        env.evm_env.cfg_env.disable_balance_check = true;
+        // env.evm_env.cfg_env.disable_balance_check = false;
 
         if self.fetch_mix_hash {
             env.evm_env.block_env.prevrandao = self
@@ -179,18 +300,14 @@ impl Backend {
         }
 
         let mut inspector = self.build_inspector();
-        let mut evm = self.new_evm_with_inspector_ref(
-            &cache_db,
-            &env,
-            &mut inspector,
-        );
+        let mut evm = self.new_evm_with_inspector_ref(&cache_db, &env, &mut inspector);
 
         // Do EIP-4788
         if env.evm_env.cfg_env.spec >= SpecId::CANCUN && parent_beacon_root.is_some() {
-            let eip4788_result= evm.transact_system_call(
-                alloy_eips::eip4788::SYSTEM_ADDRESS, 
-                alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, 
-                parent_beacon_root.unwrap().into()
+            let eip4788_result = evm.transact_system_call(
+                alloy_eips::eip4788::SYSTEM_ADDRESS,
+                alloy_eips::eip4788::BEACON_ROOTS_ADDRESS,
+                parent_beacon_root.unwrap().into(),
             )?;
 
             cache_db.commit(eip4788_result.state);
@@ -200,27 +317,53 @@ impl Backend {
     }
 }
 
-fn get_heads(batches: &Vec<Vec<TypedTransaction>>) -> Vec<TypedTransaction> {
-    let mut res = vec![];
-    for batch in batches {
+// Given a set of (remaining) transactions for each batch, get a vector of the current 'heads' (i.e., front transactions of each batch)
+// Additionally, if a proposer has already reached the `batch_limit`, their head is not considered anymore, except if all proposers reached the `batch_limit` or are otherwise empty
+fn get_heads(
+    batches: &Vec<Vec<TypedTransaction>>,
+    gas_usage: &HashMap<usize, u128>,
+    batch_limit: u128,
+) -> Vec<TypedTransaction> {
+    let mut primary = vec![]; // contains heads of batches not reaching the gas limit
+    let mut secondary = vec![]; // contains heads of all batches
+
+    for (batch_idx, batch) in batches.iter().enumerate() {
         if !batch.is_empty() {
-            res.push(batch[0].clone());
+            // only if the batch proposer has not yet reached their gas limit,
+            // include it to the primary result
+            if *gas_usage.get(&batch_idx).unwrap_or(&(0 as u128)) < batch_limit {
+                primary.push(batch[0].clone());
+            }
+            secondary.push(batch[0].clone())
         }
     }
-    res
+
+    if !primary.is_empty() { primary } else { secondary }
 }
 
-/// Iterate over the batches and remove those transactions at the beginning which are contained in the hashset
-fn cleanup_batches_for_inclusion(batches: Vec<Vec<TypedTransaction>>, included: &HashSet<FixedBytes<32>>) -> Vec<Vec<TypedTransaction>> {
+/// Iterate over the batches and remove those transactions at the beginning which are contained in the hashset.
+/// Additionally, it increments the `gas_usage` hash map for those proposers who included that transaction
+fn cleanup_batches_for_inclusion(
+    batches: Vec<Vec<TypedTransaction>>,
+    included: &HashMap<FixedBytes<32>, u64>,
+    gas_usage: &mut HashMap<usize, u128>,
+) -> Vec<Vec<TypedTransaction>> {
     let mut res = vec![];
-    for batch in batches {
+    for (batch_idx, batch) in batches.iter().enumerate() {
         for (idx, tx) in batch.iter().enumerate() {
-            if !included.contains(&tx.hash()) { 
+            if !included.contains_key(&tx.hash()) {
+                // this transaction is not already included
                 res.push(batch.clone().split_off(idx));
-                break
+                break;
             }
+
+            // this transaction is already included
+            let gas_used = included.get(&tx.hash()).unwrap();
+
+            let proposer_value = gas_usage.entry(batch_idx).or_insert(0);
+            *proposer_value = proposer_value.checked_add(*gas_used as u128).unwrap();
         }
     }
-    
+
     res
 }

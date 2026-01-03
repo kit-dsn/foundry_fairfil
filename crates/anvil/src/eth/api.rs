@@ -8,7 +8,7 @@ use crate::{
         backend::{
             self,
             db::SerializableState,
-            mem::{MIN_CREATE_GAS, MIN_TRANSACTION_GAS, TransactionAccessSimulationResult},
+            mem::{MIN_CREATE_GAS, MIN_TRANSACTION_GAS, TransactionAccessSimulationResult, concurrent_proposer::CyclingHighestOutput},
             notifications::NewBlockNotifications,
             validate::TransactionValidator,
         },
@@ -1271,7 +1271,7 @@ impl EthApi {
     }
 
     /// Handler for ETH RPC call: `anvil_cyclingHighest`
-    pub async fn anvil_cycling_highest(&self, batches: Vec<Vec<Bytes>>) -> Result<()> {
+    pub async fn anvil_cycling_highest(&self, batches: Vec<Vec<Bytes>>) -> Result<CyclingHighestOutput> {
         node_info!("anvil_cyclingHighest");
         
         let mut parsed_batches: Vec<Vec<TypedTransaction>> = vec![];
@@ -1293,10 +1293,8 @@ impl EthApi {
 
             parsed_batches.push(parsed_txs);
         }
-        
-        self.backend.concurrent_proposers_cycling_highest(parsed_batches).await?;
 
-        Ok(())
+        Ok(self.backend.concurrent_proposers_cycling_highest(parsed_batches).await?)
     }
 
     /// Sends signed transaction, returning its receipt.
