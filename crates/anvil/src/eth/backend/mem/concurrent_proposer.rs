@@ -187,7 +187,6 @@ impl Backend {
         let block_simulation = self.simulate_transaction_state_access(block).await?;
 
         // actually build the new block
-
         let mined_block_outcome = self.do_mine_block(pool_transactions).await;
 
         Ok(CyclingHighestOutput {
