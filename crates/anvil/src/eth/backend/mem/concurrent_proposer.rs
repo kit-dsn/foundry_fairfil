@@ -98,22 +98,6 @@ impl Backend {
                     let pending_tx = PendingTransaction::new(tx.clone()).unwrap();
 
                     // check includability
-                    let max_block_gas = gas_used.saturating_add(pending_tx.transaction.gas_limit());
-                    if max_block_gas > evm_env.evm_env.block_env.gas_limit {
-                        // transaction cannot be included because of block gas limit
-
-                        // insert the transaction to `included_txs` so that it gets cleaned up
-                        // in all batches in the next loop
-                        included_txs.insert(*pending_tx.hash(), 0);
-                        failing_tx.push((
-                            *pending_tx.hash(),
-                            TransactionExecutionOutcome::BlockGasExhausted(Arc::new(
-                                PoolTransaction::new(pending_tx),
-                            )),
-                        ));
-                        continue;
-                    }
-
                     let max_blob_gas = blob_gas_used
                         .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
                     if max_blob_gas > self.blob_params().max_blob_gas_per_block() {
@@ -164,6 +148,30 @@ impl Backend {
                             included_txs.insert(*pending_tx.hash(), 0);
                         }
                         Ok(result_state) => {
+                            // we must still check if the block gas limit was reached
+                            // the block gas limit actually limits the sum of gas usage,
+                            // but not the sum of gas limits. For blob gas, there is no difference
+                            // (one can calculate blob gas usage w/o execution), but for
+                            // regular gas usage we must first execute it, then check the limit.
+                            // Anvil actually does not do that correctly.
+                            // see https://github.com/foundry-rs/foundry/blob/master/crates/anvil/src/eth/backend/executor.rs#L342
+                            
+                            let new_block_gas = gas_used.saturating_add(result_state.result.gas_used());
+                            if new_block_gas > evm_env.evm_env.block_env.gas_limit {
+                                // transaction cannot be included because of block gas limit
+
+                                // insert the transaction to `included_txs` so that it gets cleaned up
+                                // in all batches in the next loop
+                                included_txs.insert(*pending_tx.hash(), 0);
+                                failing_tx.push((
+                                    *pending_tx.hash(),
+                                    TransactionExecutionOutcome::BlockGasExhausted(Arc::new(
+                                        PoolTransaction::new(pending_tx),
+                                    )),
+                                ));
+                                continue;
+                            }
+                            
                             // we executed the transaction successfully!
                             block.push(tx.clone());
                             evm_db.commit(result_state.state);

@@ -338,14 +338,6 @@ impl<DB: Db + ?Sized, V: TransactionValidator> Iterator for &mut TransactionExec
         };
         let env = self.env_for(&transaction.pending_transaction);
 
-        // check that we comply with the block's gas limit, if not disabled
-        let max_block_gas = self.gas_used.saturating_add(env.tx.base.gas_limit);
-        if !env.evm_env.cfg_env.disable_block_gas_limit
-            && max_block_gas > env.evm_env.block_env.gas_limit
-        {
-            return Some(TransactionExecutionOutcome::BlockGasExhausted(transaction));
-        }
-
         // check that we comply with the transaction's gas limit as imposed by Osaka (EIP-7825)
         if env.evm_env.cfg_env.tx_gas_limit_cap.is_none()
             && transaction.pending_transaction.transaction.gas_limit()
@@ -405,9 +397,23 @@ impl<DB: Db + ?Sized, V: TransactionValidator> Iterator for &mut TransactionExec
             }
 
             trace!(target: "backend", "[{:?}] executing", transaction.hash());
+            
             // transact and commit the transaction
-            match evm.transact_commit(env.tx) {
-                Ok(exec_result) => exec_result,
+            match evm.transact(env.tx) {
+                Ok(exec_result) => {
+                    // check that we did not reach the block gas limit
+                    // check that we comply with the block's gas limit, if not disabled
+                    let max_block_gas = self.gas_used.saturating_add(exec_result.result.gas_used());
+                    if !env.evm_env.cfg_env.disable_block_gas_limit
+                        && max_block_gas > env.evm_env.block_env.gas_limit
+                    {
+                        return Some(TransactionExecutionOutcome::BlockGasExhausted(transaction));
+                    }
+
+                    // commit the changes
+                    self.db.commit(exec_result.state);
+                    exec_result.result
+                },
                 Err(err) => {
                     warn!(target: "backend", "[{:?}] failed to execute: {:?}", transaction.hash(), err);
                     match err {
