@@ -84,7 +84,7 @@ impl Backend {
                 PendingTransaction::new((*t).clone())
                     .unwrap()
                     .to_revm_tx_env()
-                    .effective_gas_price(evm_env.evm_env.block_env.basefee as u128);
+                    .effective_gas_price(evm_env.evm_env.block_env.basefee as u128)
             });
 
             match winning_tx {
