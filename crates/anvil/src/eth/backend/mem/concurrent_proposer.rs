@@ -65,7 +65,7 @@ impl Backend {
 
         loop {
             batches =
-                cleanup_batches_for_inclusion(batches, &included_txs, &mut gas_usage_per_proposer);
+                cleanup_batches_for_inclusion(batches, &included_txs);
 
             let heads = get_heads(
                 &batches,
@@ -79,7 +79,7 @@ impl Backend {
             // the next transaction is the transaction with the highest effective gas price
             // if multiple transactions fullfil this criteria, `max_by_key` takes the last one
             // i.e., from the highest batch proposer
-            let winning_tx = heads.iter().max_by_key(|t| {
+            let winner = heads.iter().max_by_key(|(_, t)| {
                 // get the effective gas price of transactions
                 PendingTransaction::new((*t).clone())
                     .unwrap()
@@ -87,12 +87,12 @@ impl Backend {
                     .effective_gas_price(evm_env.evm_env.block_env.basefee as u128)
             });
 
-            match winning_tx {
+            match winner {
                 None => {
                     // no more transactions left, break out of the loop
                     break;
                 }
-                Some(tx) => {
+                Some((batch, tx)) => {
                     // let's try to run that transaction!
 
                     let pending_tx = PendingTransaction::new(tx.clone()).unwrap();
@@ -173,13 +173,22 @@ impl Backend {
                             }
                             
                             // we executed the transaction successfully!
+
+                            // commit transaction
                             block.push(tx.clone());
                             evm_db.commit(result_state.state);
+                            
+                            // include it into set of included txs with gas used
                             included_txs.insert(*pending_tx.hash(), result_state.result.gas_used());
 
+                            // update block variables
                             gas_used = gas_used.saturating_add(result_state.result.gas_used());
                             blob_gas_used = blob_gas_used
-                                .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0))
+                                .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
+
+                            // for the winning batch increase their gas usage
+                            let batch_gas_entry = gas_usage_per_proposer.entry(*batch).or_insert(0);
+                            *batch_gas_entry = batch_gas_entry.saturating_add(result_state.result.gas_used() as u128);
                         }
                     }
                 }
@@ -330,7 +339,7 @@ fn get_heads(
     batches: &Vec<Vec<TypedTransaction>>,
     gas_usage: &HashMap<usize, u128>,
     batch_limit: u128,
-) -> Vec<TypedTransaction> {
+) -> Vec<(usize, TypedTransaction)> {
     let mut primary = vec![]; // contains heads of batches not reaching the gas limit
     let mut secondary = vec![]; // contains heads of all batches
 
@@ -339,9 +348,9 @@ fn get_heads(
             // only if the batch proposer has not yet reached their gas limit,
             // include it to the primary result
             if *gas_usage.get(&batch_idx).unwrap_or(&(0 as u128)) < batch_limit {
-                primary.push(batch[0].clone());
+                primary.push((batch_idx, batch[0].clone()));
             }
-            secondary.push(batch[0].clone())
+            secondary.push((batch_idx, batch[0].clone()))
         }
     }
 
@@ -352,23 +361,23 @@ fn get_heads(
 /// Additionally, it increments the `gas_usage` hash map for those proposers who included that transaction
 fn cleanup_batches_for_inclusion(
     batches: Vec<Vec<TypedTransaction>>,
-    included: &HashMap<FixedBytes<32>, u64>,
-    gas_usage: &mut HashMap<usize, u128>,
+    included: &HashMap<FixedBytes<32>, u64>
 ) -> Vec<Vec<TypedTransaction>> {
     let mut res = vec![];
-    for (batch_idx, batch) in batches.iter().enumerate() {
+    for batch in batches.iter() {
+        let mut has_remaining_transactions = false;
         for (idx, tx) in batch.iter().enumerate() {
             if !included.contains_key(&tx.hash()) {
                 // this transaction is not already included
                 res.push(batch.clone().split_off(idx));
+                has_remaining_transactions = true;
                 break;
             }
+        }
 
-            // this transaction is already included
-            let gas_used = included.get(&tx.hash()).unwrap();
-
-            let proposer_value = gas_usage.entry(batch_idx).or_insert(0);
-            *proposer_value = proposer_value.checked_add(*gas_used as u128).unwrap();
+        // all transactions are already included into aggregated block
+        if !has_remaining_transactions {
+            res.push(vec![]);
         }
     }
 
