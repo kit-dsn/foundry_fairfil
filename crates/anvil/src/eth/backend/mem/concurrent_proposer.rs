@@ -14,7 +14,7 @@ use crate::eth::{
 use alloy_evm::Evm;
 use alloy_primitives::{FixedBytes, U256};
 use anvil_core::eth::transaction::{PendingTransaction, TypedTransaction};
-use revm::{DatabaseCommit, context::Transaction, database::CacheDB, primitives::hardfork::SpecId};
+use revm::{DatabaseCommit, context::{Transaction, result::EVMError}, database::CacheDB, primitives::hardfork::SpecId};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -158,10 +158,35 @@ impl Backend {
                         self.new_evm_with_inspector_ref(&evm_db, &evm_env, &mut inspector);
                     let transact_res = evm.transact(pending_tx.to_revm_tx_env());
                     match transact_res {
-                        Err(_) => {
+                        Err(e) => {
                             // failed!
-                            println!("tx failed {}", pending_tx.hash());
                             included_txs.insert(*pending_tx.hash(), 0);
+                            
+                            
+                            match e {
+                                EVMError::Database(err) => {
+                                    failing_tx.push((
+                                        *pending_tx.hash(),
+                                        TransactionExecutionOutcome::DatabaseError(
+                                            Arc::new(PoolTransaction::new(pending_tx)),
+                                            err,
+                                        )
+                                    ));
+                                }
+                                EVMError::Transaction(err) => {
+                                    failing_tx.push((
+                                        *pending_tx.hash(),
+                                        TransactionExecutionOutcome::Invalid(
+                                            Arc::new(PoolTransaction::new(pending_tx)),
+                                            err.into(),
+                                        )
+                                    ));
+                                }
+                                // This will correspond to prevrandao not set, and it should never happen.
+                                // If it does, it's a bug.
+                                e => panic!("failed to execute transaction: {e}"),
+                            }
+                            
                         }
                         Ok(result_state) => {
                             // we executed the transaction successfully!
