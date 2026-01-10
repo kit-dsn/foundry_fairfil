@@ -2207,6 +2207,10 @@ impl Backend {
         // disable balance checks
         env.evm_env.cfg_env.disable_balance_check = true;
 
+        // disable gas fee checks
+        env.evm_env.cfg_env.disable_base_fee = true;
+        env.evm_env.cfg_env.disable_block_gas_limit = true;
+
         if self.fetch_mix_hash {
             env.evm_env.block_env.prevrandao = self
                 .get_fork()
@@ -2314,12 +2318,14 @@ impl Backend {
                 .with_access_list_inspector()
                 .with_steps_tracing()
                 .with_transfers();
-
+            
             evm = self.new_evm_with_inspector_ref(
                 &cache_db,
                 &env,
                 &mut inspector,
             );
+
+            env.evm_env.cfg_env.disable_base_fee = true;
 
             let eth_res_res  = evm.transact(pending_tx.to_revm_tx_env());
             if eth_res_res.is_err() {
