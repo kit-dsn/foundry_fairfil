@@ -175,7 +175,25 @@ impl BlockRequest {
     }
 }
 
-/// The storage slots that a transaction accesses and writes to
+#[derive(Debug)]
+pub enum SimulationError {
+    InvalidTransaction(InvalidTransactionError),
+    BlockGasExhausted,
+    BlockBlobGasExhausted,
+}
+
+impl Serialize for SimulationError {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        match self {
+            SimulationError::InvalidTransaction(invalid_transaction_error) => invalid_transaction_error.serialize(serializer),
+            SimulationError::BlockGasExhausted => serializer.serialize_str("BlockGasExhausted"),
+            SimulationError::BlockBlobGasExhausted => serializer.serialize_str("BlockBlobGasExhausted"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct TransactionAccessSimulationResult {
     // the hash of the transaction
@@ -189,7 +207,7 @@ pub struct TransactionAccessSimulationResult {
     // if the transaction was successful and is includable
     pub success: bool,
     // list of validity errors
-    pub errors: Vec<InvalidTransactionError>,
+    pub errors: Vec<SimulationError>,
     // amount of gas used
     pub gas_used: u64,
     // amount of ETH burned (base fee)
@@ -2303,6 +2321,12 @@ impl Backend {
         }
 
         let mut out = vec![];
+        
+        // running value for block gas usage
+        let mut gas_used = 0 as u64;
+        // running value for block blob gas usage
+        let mut blob_gas_used = 0 as u64;
+        
         // iterate over all transactions and execute them in order
         for tx in txs {
             let tx_hash = tx.hash();
@@ -2310,7 +2334,27 @@ impl Backend {
 
             // perform validity checks
             let sender_acc = cache_db.load_account(*pending_tx.sender()).expect("could not load account");
-            let errors = validate_transation_includability(&pending_tx, &sender_acc.info, &env);
+            let mut errors = validate_transation_includability(&pending_tx, &sender_acc.info, &env);
+
+            // check for (blob) gas failures
+            {
+                let max_block_gas = gas_used.saturating_add(pending_tx.transaction.gas_limit());
+                if max_block_gas > env.evm_env.block_env.gas_limit {
+                    // transaction exceeds block gas limit
+                    errors.push(
+                        SimulationError::BlockGasExhausted
+                    );
+                }
+
+                let max_blob_gas = blob_gas_used
+                    .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
+                if max_blob_gas > self.blob_params().max_blob_gas_per_block() {
+                    // transaction exceeds block blob gas limit
+                    errors.push(
+                        SimulationError::BlockBlobGasExhausted
+                    )
+                }
+            }
 
             env.tx = pending_tx.to_revm_tx_env();
 
@@ -2414,7 +2458,13 @@ impl Backend {
                 nonces_required: inspector.nonces.required_nonces,
                 nonces_possible: inspector.nonces.possible_nonces,
             };
+            
             out.push(tx_res);
+
+            // update running (blob) gas values
+            gas_used = gas_used.saturating_add(eth_res.result.gas_used());
+            blob_gas_used = blob_gas_used
+                .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
         }
 
         Ok(out)
@@ -4108,7 +4158,7 @@ fn validate_transation_includability(
     pending: &PendingTransaction,
     account: &AccountInfo,
     env: &Env,
-) -> Vec<InvalidTransactionError> {
+) -> Vec<SimulationError> {
     let tx = &pending.transaction;
     let mut errors : Vec<InvalidTransactionError> = vec![];
 
@@ -4248,7 +4298,7 @@ fn validate_transation_includability(
         }
     }
     
-    errors
+    errors.into_iter().map(|e| SimulationError::InvalidTransaction(e)).collect()
 }
 
 
