@@ -59,7 +59,8 @@ use alloy_network::{
     EthereumWallet, UnknownTxEnvelope, UnknownTypedTransaction,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, FixedBytes, TxHash, TxKind, U64, U256, aliases::I512, address, hex, keccak256, logs_bloom, map::HashMap
+    Address, B256, Bytes, FixedBytes, TxHash, TxKind, U64, U256, address, aliases::I512, hex,
+    keccak256, logs_bloom, map::HashMap,
 };
 use alloy_rpc_types::{
     AccessList, Block as AlloyBlock, BlockId, BlockNumberOrTag as BlockNumber, BlockTransactions,
@@ -80,7 +81,7 @@ use alloy_rpc_types::{
     },
 };
 use alloy_serde::{OtherFields, WithOtherFields};
-use alloy_signer::{Signature};
+use alloy_signer::Signature;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_trie::{HashBuilder, Nibbles, proof::ProofRetainer};
 use anvil_core::eth::{
@@ -111,30 +112,44 @@ use foundry_evm::{
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use op_alloy_consensus::DEPOSIT_TX_TYPE_ID;
 use op_revm::{
-    OpContext, OpHaltReason, OpTransaction, transaction::deposit::DepositTransactionParts
+    OpContext, OpHaltReason, OpTransaction, transaction::deposit::DepositTransactionParts,
 };
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use revm::{
-    DatabaseCommit, Inspector, context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv}, context_interface::{
+    DatabaseCommit, Inspector,
+    context::{Block as RevmBlock, BlockEnv, Cfg, TxEnv},
+    context_interface::{
         block::BlobExcessGasAndPrice,
         result::{ExecutionResult, Output, ResultAndState},
-    }, database::{CacheDB, DbAccount, WrapDatabaseRef}, interpreter::InstructionResult, precompile::{PrecompileSpecId, Precompiles}, primitives::{KECCAK_EMPTY, hardfork::SpecId}, state::AccountInfo
+    },
+    database::{CacheDB, DbAccount, WrapDatabaseRef},
+    interpreter::InstructionResult,
+    precompile::{PrecompileSpecId, Precompiles},
+    primitives::{KECCAK_EMPTY, hardfork::SpecId},
+    state::AccountInfo,
 };
 use revm_inspectors::tracing::types::StorageChange;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap, fmt::Debug, hash::RandomState, io::{Read, Write}, ops::Not, path::PathBuf, sync::Arc, time::Duration
+    collections::BTreeMap,
+    fmt::Debug,
+    hash::RandomState,
+    io::{Read, Write},
+    ops::Not,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
 };
 use storage::{Blockchain, DEFAULT_HISTORY_LIMIT, MinedTransaction};
 use tokio::sync::RwLock as AsyncRwLock;
 
 pub mod cache;
+pub mod concurrent_proposer;
 pub mod fork_db;
 pub mod in_memory_db;
 pub mod inspector;
 pub mod state;
 pub mod storage;
-pub mod concurrent_proposer;
 
 /// Helper trait that combines revm::DatabaseRef with Debug.
 /// This is needed because alloy-evm requires Debug on Database implementations.
@@ -185,11 +200,16 @@ pub enum SimulationError {
 impl Serialize for SimulationError {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
-        S: serde::Serializer {
+        S: serde::Serializer,
+    {
         match self {
-            SimulationError::InvalidTransaction(invalid_transaction_error) => invalid_transaction_error.serialize(serializer),
+            SimulationError::InvalidTransaction(invalid_transaction_error) => {
+                invalid_transaction_error.serialize(serializer)
+            }
             SimulationError::BlockGasExhausted => serializer.serialize_str("BlockGasExhausted"),
-            SimulationError::BlockBlobGasExhausted => serializer.serialize_str("BlockBlobGasExhausted"),
+            SimulationError::BlockBlobGasExhausted => {
+                serializer.serialize_str("BlockBlobGasExhausted")
+            }
         }
     }
 }
@@ -208,6 +228,8 @@ pub struct TransactionAccessSimulationResult {
     pub success: bool,
     // list of validity errors
     pub errors: Vec<SimulationError>,
+    // amount of blob gas used
+    pub blob_gas_used: u64,
     // amount of gas used
     pub gas_used: u64,
     // amount of ETH burned (base fee)
@@ -215,9 +237,9 @@ pub struct TransactionAccessSimulationResult {
     // amount of ETH transfered to coinbase as priority fee
     pub priority_fee: U256,
     // the effectively paid gas price
-    pub effective_gas_price : u128,
+    pub effective_gas_price: u128,
     // the maximum gas costs (gas limit * effective gas price + blob gas)
-    pub max_gas_cost : u128,
+    pub max_gas_cost: u128,
     // the sender of the transaction
     pub sender: Address,
     // the beneficiary account/miner/coinbase address
@@ -2063,8 +2085,9 @@ impl Backend {
         block_request: Option<BlockRequest>,
         opts: GethDebugTracingCallOptions,
     ) -> Result<GethTrace, BlockchainError> {
-        let GethDebugTracingCallOptions { tracing_options, block_overrides, state_overrides, .. } =
-            opts;
+        let GethDebugTracingCallOptions {
+            tracing_options, block_overrides, state_overrides, ..
+        } = opts;
         let GethDebugTracingOptions { config, tracer, tracer_config, .. } = tracing_options;
 
         self.with_database_at(block_request, |state, mut block| {
@@ -2211,13 +2234,12 @@ impl Backend {
 
         let db = self.db.read().await;
         let mut cache_db = CacheDB::new(db.current_state());
-        
+
         let mut env = self.env.read().clone();
 
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
-        env.evm_env.block_env.number = 
-            env.evm_env.block_env.number.saturating_add(U256::from(1));
+        env.evm_env.block_env.number = env.evm_env.block_env.number.saturating_add(U256::from(1));
 
         // disable nonce checks
         env.evm_env.cfg_env.disable_nonce_check = true;
@@ -2303,37 +2325,34 @@ impl Backend {
         }
 
         let mut inspector = self.build_inspector();
-        let mut evm = self.new_evm_with_inspector_ref(
-            &cache_db,
-            &env,
-            &mut inspector,
-        );
+        let mut evm = self.new_evm_with_inspector_ref(&cache_db, &env, &mut inspector);
 
         // Do EIP-4788
         if env.evm_env.cfg_env.spec >= SpecId::CANCUN && parent_beacon_root.is_some() {
-            let eip4788_result= evm.transact_system_call(
-                alloy_eips::eip4788::SYSTEM_ADDRESS, 
-                alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, 
-                parent_beacon_root.unwrap().into()
+            let eip4788_result = evm.transact_system_call(
+                alloy_eips::eip4788::SYSTEM_ADDRESS,
+                alloy_eips::eip4788::BEACON_ROOTS_ADDRESS,
+                parent_beacon_root.unwrap().into(),
             )?;
 
             cache_db.commit(eip4788_result.state);
         }
 
         let mut out = vec![];
-        
+
         // running value for block gas usage
         let mut gas_used = 0 as u64;
         // running value for block blob gas usage
         let mut blob_gas_used = 0 as u64;
-        
+
         // iterate over all transactions and execute them in order
         for tx in txs {
             let tx_hash = tx.hash();
             let pending_tx = PendingTransaction::new(tx)?;
 
             // perform validity checks
-            let sender_acc = cache_db.load_account(*pending_tx.sender()).expect("could not load account");
+            let sender_acc =
+                cache_db.load_account(*pending_tx.sender()).expect("could not load account");
             let mut errors = validate_transation_includability(&pending_tx, &sender_acc.info, &env);
 
             // check for (blob) gas failures
@@ -2341,37 +2360,30 @@ impl Backend {
                 let max_block_gas = gas_used.saturating_add(pending_tx.transaction.gas_limit());
                 if max_block_gas > env.evm_env.block_env.gas_limit {
                     // transaction exceeds block gas limit
-                    errors.push(
-                        SimulationError::BlockGasExhausted
-                    );
+                    errors.push(SimulationError::BlockGasExhausted);
                 }
 
-                let max_blob_gas = blob_gas_used
-                    .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
+                let max_blob_gas =
+                    blob_gas_used.saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
                 if max_blob_gas > self.blob_params().max_blob_gas_per_block() {
                     // transaction exceeds block blob gas limit
-                    errors.push(
-                        SimulationError::BlockBlobGasExhausted
-                    )
+                    errors.push(SimulationError::BlockBlobGasExhausted)
                 }
             }
 
             env.tx = pending_tx.to_revm_tx_env();
 
-            let mut inspector = self.build_inspector()
+            let mut inspector = self
+                .build_inspector()
                 .with_access_list_inspector()
                 .with_steps_tracing()
                 .with_transfers();
-            
-            evm = self.new_evm_with_inspector_ref(
-                &cache_db,
-                &env,
-                &mut inspector,
-            );
+
+            evm = self.new_evm_with_inspector_ref(&cache_db, &env, &mut inspector);
 
             env.evm_env.cfg_env.disable_base_fee = true;
 
-            let eth_res_res  = evm.transact(pending_tx.to_revm_tx_env());
+            let eth_res_res = evm.transact(pending_tx.to_revm_tx_env());
             if eth_res_res.is_err() {
                 println!("evm.transact errored: {:?}", eth_res_res);
                 return Err(eth_res_res.err().unwrap().into());
@@ -2384,31 +2396,35 @@ impl Backend {
             let mut accessed = HashMap::new();
             inspector.access_list.unwrap().touched_slots().iter().for_each(|(a, b)| {
                 b.iter().for_each(|key| {
-                    accessed.entry(*a).or_insert(Vec::<U256>::new()).push((*key as FixedBytes<32>).into())
+                    accessed
+                        .entry(*a)
+                        .or_insert(Vec::<U256>::new())
+                        .push((*key as FixedBytes<32>).into())
                 });
             });
 
-            let state_diffs: Vec<(Address, Box<StorageChange>)> = inspector.tracer.unwrap()
+            let state_diffs: Vec<(Address, Box<StorageChange>)> = inspector
+                .tracer
+                .unwrap()
                 .traces()
                 .nodes()
                 .iter()
-                .map(|n| 
-                    n.trace.steps.iter().map(|s| {
-                        if s.storage_change.is_none() {
-                            None
-                        } else {
-                            Some((n.execution_address(), s.storage_change.clone()))
-                        }
-                    })
-                .collect::<Vec<_>>())
-                .flatten().flatten()
-                .flat_map(|i| {
-                    if i.1.is_none() {
-                        None
-                    } else {
-                        Some((i.0, i.1.unwrap()))
-                    }
+                .map(|n| {
+                    n.trace
+                        .steps
+                        .iter()
+                        .map(|s| {
+                            if s.storage_change.is_none() {
+                                None
+                            } else {
+                                Some((n.execution_address(), s.storage_change.clone()))
+                            }
+                        })
+                        .collect::<Vec<_>>()
                 })
+                .flatten()
+                .flatten()
+                .flat_map(|i| if i.1.is_none() { None } else { Some((i.0, i.1.unwrap())) })
                 .collect();
 
             // fetch the write set
@@ -2444,11 +2460,12 @@ impl Backend {
             let tx_res = TransactionAccessSimulationResult {
                 hash: tx_hash,
                 accesses: accessed,
-                writes: writes,
+                writes,
                 transfer_diffs: eth_diffs,
                 success: errors.len() == 0 && eth_res.result.is_success(),
-                errors: errors,
+                errors,
                 gas_used: eth_res.result.gas_used(),
+                blob_gas_used: pending_tx.transaction.blob_gas().unwrap_or(0),
                 burned_ether: burned_fees,
                 priority_fee: prio_fees,
                 sender: *pending_tx.sender(),
@@ -2458,13 +2475,13 @@ impl Backend {
                 nonces_required: inspector.nonces.required_nonces,
                 nonces_possible: inspector.nonces.possible_nonces,
             };
-            
+
             out.push(tx_res);
 
             // update running (blob) gas values
             gas_used = gas_used.saturating_add(eth_res.result.gas_used());
-            blob_gas_used = blob_gas_used
-                .saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
+            blob_gas_used =
+                blob_gas_used.saturating_add(pending_tx.transaction.blob_gas().unwrap_or(0));
         }
 
         Ok(out)
@@ -4160,8 +4177,7 @@ fn validate_transation_includability(
     env: &Env,
 ) -> Vec<SimulationError> {
     let tx = &pending.transaction;
-    let mut errors : Vec<InvalidTransactionError> = vec![];
-
+    let mut errors: Vec<InvalidTransactionError> = vec![];
 
     if let Some(tx_chain_id) = tx.chain_id() {
         if env.evm_env.chainid() != tx_chain_id {
@@ -4179,8 +4195,7 @@ fn validate_transation_includability(
     }
 
     // Nonce validation
-    let is_deposit_tx =
-        matches!(&pending.transaction.transaction, TypedTransaction::Deposit(_));
+    let is_deposit_tx = matches!(&pending.transaction.transaction, TypedTransaction::Deposit(_));
     let nonce = tx.nonce();
     if nonce < account.nonce && !is_deposit_tx {
         errors.push(InvalidTransactionError::NonceTooLow);
@@ -4226,8 +4241,7 @@ fn validate_transation_includability(
         }
 
         // Check tx gas limit against block gas limit, if block gas limit is set.
-        if tx.gas_limit() > env.evm_env.block_env.gas_limit
-        {
+        if tx.gas_limit() > env.evm_env.block_env.gas_limit {
             errors.push(InvalidTransactionError::GasTooHigh(ErrDetail {
                 detail: String::from("tx.gas_limit > env.block.gas_limit"),
             }));
@@ -4281,26 +4295,24 @@ fn validate_transation_includability(
             }
             _ => {
                 // check sufficient funds: `gas * price + value`
-                let req_funds_res =
-                    max_cost.checked_add(value.saturating_to()).ok_or_else(|| {
-                        InvalidTransactionError::InsufficientFunds
-                    });
-                
+                let req_funds_res = max_cost
+                    .checked_add(value.saturating_to())
+                    .ok_or_else(|| InvalidTransactionError::InsufficientFunds);
+
                 match req_funds_res {
                     Ok(req_funds) => {
                         if account.balance < U256::from(req_funds) {
                             errors.push(InvalidTransactionError::InsufficientFunds);
                         }
-                    },
+                    }
                     Err(e) => errors.push(e),
                 }
             }
         }
     }
-    
+
     errors.into_iter().map(|e| SimulationError::InvalidTransaction(e)).collect()
 }
-
 
 /// Creates a `AnyRpcTransaction` as it's expected for the `eth` RPC api from storage data
 pub fn transaction_build(
