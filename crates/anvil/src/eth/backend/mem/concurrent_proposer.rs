@@ -5,7 +5,10 @@ use crate::eth::{
         db::StateDb,
         env::Env,
         executor::TransactionExecutionOutcome,
-        mem::{Backend, TransactionAccessSimulationResult, inspector::AnvilInspector, storage::MinedBlockOutcome},
+        mem::{
+            Backend, TransactionAccessSimulationResult, inspector::AnvilInspector,
+            storage::MinedBlockOutcome,
+        },
         validate::TransactionValidator,
     },
     error::BlockchainError,
@@ -14,7 +17,12 @@ use crate::eth::{
 use alloy_evm::Evm;
 use alloy_primitives::{FixedBytes, U256};
 use anvil_core::eth::transaction::{PendingTransaction, TypedTransaction};
-use revm::{DatabaseCommit, context::{Transaction, result::EVMError}, database::CacheDB, primitives::hardfork::SpecId};
+use revm::{
+    DatabaseCommit,
+    context::{Transaction, result::EVMError},
+    database::CacheDB,
+    primitives::hardfork::SpecId,
+};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -24,7 +32,7 @@ pub struct CyclingHighestOutput {
     /// the mined block
     pub block: MinedBlockOutcome,
     /// simulation of all included transactions
-    pub block_sim : Vec<TransactionAccessSimulationResult>,
+    pub block_sim: Vec<TransactionAccessSimulationResult>,
     /// transaction (hashes) that failed and were not included into the block
     pub failed_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)>,
     /// distribution of gas usage per batch (proposer)
@@ -64,8 +72,7 @@ impl Backend {
         let (evm_env, mut evm_db) = self.build_evm_environment().await?;
 
         loop {
-            batches =
-                cleanup_batches_for_inclusion(batches, &included_txs);
+            batches = cleanup_batches_for_inclusion(batches, &included_txs);
 
             let heads = get_heads(
                 &batches,
@@ -161,8 +168,7 @@ impl Backend {
                         Err(e) => {
                             // failed!
                             included_txs.insert(*pending_tx.hash(), 0);
-                            
-                            
+
                             match e {
                                 EVMError::Database(err) => {
                                     failing_tx.push((
@@ -170,7 +176,7 @@ impl Backend {
                                         TransactionExecutionOutcome::DatabaseError(
                                             Arc::new(PoolTransaction::new(pending_tx)),
                                             err,
-                                        )
+                                        ),
                                     ));
                                 }
                                 EVMError::Transaction(err) => {
@@ -179,14 +185,13 @@ impl Backend {
                                         TransactionExecutionOutcome::Invalid(
                                             Arc::new(PoolTransaction::new(pending_tx)),
                                             err.into(),
-                                        )
+                                        ),
                                     ));
                                 }
                                 // This will correspond to prevrandao not set, and it should never happen.
                                 // If it does, it's a bug.
                                 e => panic!("failed to execute transaction: {e}"),
                             }
-                            
                         }
                         Ok(result_state) => {
                             // we executed the transaction successfully!
@@ -194,7 +199,7 @@ impl Backend {
                             // commit transaction
                             block.push(tx.clone());
                             evm_db.commit(result_state.state);
-                            
+
                             // include it into set of included txs with gas used
                             included_txs.insert(*pending_tx.hash(), result_state.result.gas_used());
 
@@ -205,7 +210,8 @@ impl Backend {
 
                             // for the winning batch increase their gas usage
                             let batch_gas_entry = gas_usage_per_proposer.entry(*batch).or_insert(0);
-                            *batch_gas_entry = batch_gas_entry.saturating_add(result_state.result.gas_used() as u128);
+                            *batch_gas_entry = batch_gas_entry
+                                .saturating_add(result_state.result.gas_used() as u128);
                         }
                     }
                 }
@@ -253,8 +259,7 @@ impl Backend {
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
 
-        env.evm_env.block_env.number = 
-            env.evm_env.block_env.number.saturating_add(U256::from(1));
+        env.evm_env.block_env.number = env.evm_env.block_env.number.saturating_add(U256::from(1));
 
         // disable nonce checks
         // env.evm_env.cfg_env.disable_nonce_check = false;
@@ -381,7 +386,7 @@ fn get_heads(
 /// Additionally, it increments the `gas_usage` hash map for those proposers who included that transaction
 fn cleanup_batches_for_inclusion(
     batches: Vec<Vec<TypedTransaction>>,
-    included: &HashMap<FixedBytes<32>, u64>
+    included: &HashMap<FixedBytes<32>, u64>,
 ) -> Vec<Vec<TypedTransaction>> {
     let mut res = vec![];
     for batch in batches.iter() {
