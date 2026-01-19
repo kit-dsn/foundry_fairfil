@@ -1086,6 +1086,24 @@ impl Backend {
             let reset_time = block.header.timestamp;
             self.time.reset(reset_time);
 
+            // nbeyer: update FeeManager so that next block has
+            // fees based on preceding block
+            let next_block_base_fee = self.fees.get_next_block_base_fee_per_gas(
+                block.header.gas_used,
+                block.header.gas_limit,
+                block.header.base_fee_per_gas.unwrap_or_default(),
+            );
+            let next_block_excess_blob_gas = self.fees.get_next_block_blob_excess_gas(
+                block.header.excess_blob_gas.unwrap_or_default(),
+                block.header.blob_gas_used.unwrap_or_default(),
+            );
+            self.fees.set_base_fee(next_block_base_fee);
+
+            self.fees.set_blob_excess_gas_and_price(BlobExcessGasAndPrice::new(
+                next_block_excess_blob_gas,
+                get_blob_base_fee_update_fraction_by_spec_id(*self.env.read().evm_env.spec_id()),
+            ));
+
             let mut env = self.env.write();
             env.evm_env.block_env = BlockEnv {
                 number: U256::from(num),
@@ -1094,9 +1112,8 @@ impl Backend {
                 // ensures prevrandao is set
                 prevrandao: Some(block.header.mix_hash.unwrap_or_default()),
                 gas_limit: block.header.gas_limit,
-                // Keep previous `beneficiary` and `basefee` value
-                beneficiary: env.evm_env.block_env.beneficiary,
-                basefee: env.evm_env.block_env.basefee,
+                beneficiary: block.header.beneficiary,
+                basefee: block.header.base_fee_per_gas.unwrap_or_default(),
                 ..Default::default()
             }
         }
