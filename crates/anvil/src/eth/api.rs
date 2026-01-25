@@ -2,13 +2,20 @@ use super::{
     backend::mem::{BlockRequest, DatabaseRef, State},
     sign::build_typed_transaction,
 };
+use crate::eth::backend::mem::{
+    storage::MinedBlockOutcome, transaction_register::TransactionRegister,
+};
+use crate::eth::error::PoolError::AlreadyImported;
 use crate::{
     ClientFork, LoggingManager, Miner, MiningMode, StorageInfo,
     eth::{
         backend::{
             self,
             db::SerializableState,
-            mem::{MIN_CREATE_GAS, MIN_TRANSACTION_GAS, TransactionAccessSimulationResult, concurrent_proposer::CyclingHighestOutput},
+            mem::{
+                MIN_CREATE_GAS, MIN_TRANSACTION_GAS, TransactionAccessSimulationResult,
+                concurrent_proposer::CyclingHighestOutput,
+            },
             notifications::NewBlockNotifications,
             validate::TransactionValidator,
         },
@@ -99,8 +106,6 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
     try_join,
 };
-use crate::eth::backend::mem::storage::MinedBlockOutcome;
-use crate::eth::error::PoolError::AlreadyImported;
 
 /// The client version: `anvil/v{major}.{minor}.{patch}`
 pub const CLIENT_VERSION: &str = concat!("anvil/v", env!("CARGO_PKG_VERSION"));
@@ -112,6 +117,8 @@ pub const CLIENT_VERSION: &str = concat!("anvil/v", env!("CARGO_PKG_VERSION"));
 pub struct EthApi {
     /// The transaction pool
     pool: Arc<Pool>,
+    /// Register of transactions
+    transaction_register: Arc<TransactionRegister>,
     /// Holds all blockchain related data
     /// In-Memory only for now
     pub backend: Arc<backend::mem::Backend>,
@@ -167,6 +174,7 @@ impl EthApi {
             net_listening: true,
             transaction_order: Arc::new(RwLock::new(transactions_order)),
             instance_id: Arc::new(RwLock::new(B256::random())),
+            transaction_register: Arc::new(TransactionRegister::default()),
         }
     }
 
@@ -269,6 +277,12 @@ impl EthApi {
             }
             EthRequest::SimulateTransaction(txs) => {
                 self.anvil_simulate_transaction(txs).await.to_rpc_result()
+            }
+            EthRequest::SimulateTransactionByHash(hashes) => {
+                self.anvil_simulate_transaction_by_hashes(hashes).await.to_rpc_result()
+            }
+            EthRequest::RegisterTransactions(txs) => {
+                self.anvil_register_transactions(txs).await.to_rpc_result()
             }
             EthRequest::CyclingHighest(batches) => {
                 self.anvil_cycling_highest(batches).await.to_rpc_result()
@@ -1246,11 +1260,36 @@ impl EthApi {
         Ok(hash)
     }
 
+    /// Handler for ETH RPC call: `anvil_simulateTransactionByHash`
+    pub async fn anvil_simulate_transaction_by_hashes(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Result<Vec<TransactionAccessSimulationResult>> {
+        let mut parsed_txs = vec![];
+        for hash in hashes {
+            let tx_opt = self.transaction_register.get_raw_transaction(hash, &self.backend);
+            match tx_opt {
+                Some(tx) => parsed_txs.push(tx),
+                None => {
+                    return Err(BlockchainError::Message(format!(
+                        "transaction not found: {}",
+                        hash
+                    )));
+                }
+            }
+        }
+
+        let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
+        Ok(res)
+    }
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
-    pub async fn anvil_simulate_transaction(&self, txs: Vec<Bytes>) -> Result<Vec<TransactionAccessSimulationResult>> {
+    pub async fn anvil_simulate_transaction(
+        &self,
+        txs: Vec<Bytes>,
+    ) -> Result<Vec<TransactionAccessSimulationResult>> {
         node_info!("anvil_simulateTransaction");
-        
+
         let mut parsed_txs = vec![];
         for tx in txs {
             // load and parse raw transaction
@@ -1265,15 +1304,45 @@ impl EthApi {
 
             parsed_txs.push(transaction);
         }
-               
+
         let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
         Ok(res)
     }
 
+    /// Handler for ETH RPC call: `anvil_registerTransactions`
+    pub async fn anvil_register_transactions(
+        &self,
+        txs: Vec<Bytes>,
+    ) -> Result<Vec<Arc<TransactionAccessSimulationResult>>> {
+        node_info!("anvil_registerTx");
+
+        let mut sims = vec![];
+        for tx in txs {
+            // load and parse raw transaction
+            // heavily inspired by send_raw_transaction
+            let mut data = tx.as_ref();
+            if data.is_empty() {
+                return Err(BlockchainError::EmptyRawTransactionData);
+            }
+
+            let transaction = TypedTransaction::decode_2718(&mut data)
+                .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+            let (_, sim) =
+                self.transaction_register.register_transaction(transaction, &self.backend).await?;
+            sims.push(sim);
+        }
+
+        Ok(sims)
+    }
+
     /// Handler for ETH RPC call: `anvil_cyclingHighest`
-    pub async fn anvil_cycling_highest(&self, batches: Vec<Vec<Bytes>>) -> Result<CyclingHighestOutput> {
+    pub async fn anvil_cycling_highest(
+        &self,
+        batches: Vec<Vec<Bytes>>,
+    ) -> Result<CyclingHighestOutput> {
         node_info!("anvil_cyclingHighest");
-        
+
         let mut parsed_batches: Vec<Vec<TypedTransaction>> = vec![];
         for batch in batches {
             let mut parsed_txs = vec![];
@@ -2041,7 +2110,11 @@ impl EthApi {
     /// Mines a series of blocks.
     ///
     /// Handler for ETH RPC call: `anvil_mine`
-    pub async fn anvil_mine(&self, num_blocks: Option<U256>, interval: Option<U256>) -> Result<Vec<MinedBlockOutcome>> {
+    pub async fn anvil_mine(
+        &self,
+        num_blocks: Option<U256>,
+        interval: Option<U256>,
+    ) -> Result<Vec<MinedBlockOutcome>> {
         node_info!("anvil_mine");
         let interval = interval.map(|i| i.to::<u64>());
         let blocks = num_blocks.unwrap_or(U256::from(1));
@@ -2049,7 +2122,7 @@ impl EthApi {
             return Ok(Vec::new());
         }
 
-        let mut outcomes : Vec<MinedBlockOutcome> = Vec::new();
+        let mut outcomes: Vec<MinedBlockOutcome> = Vec::new();
         for _ in 0..blocks.to::<u64>() {
             // If we have an interval, jump forwards in time to the "next" timestamp
             if let Some(interval) = interval {
