@@ -250,7 +250,7 @@ impl Backend {
         Ok(true)
     }
 
-    async fn build_evm_environment(&self) -> Result<(Env, CacheDB<StateDb>), BlockchainError> {
+    pub async fn build_evm_environment(&self) -> Result<(Env, CacheDB<StateDb>), BlockchainError> {
         let db = self.db.read().await;
         let mut cache_db = CacheDB::new(db.current_state());
 
@@ -258,7 +258,6 @@ impl Backend {
 
         env.evm_env.block_env.basefee = self.base_fee();
         env.evm_env.block_env.blob_excess_gas_and_price = self.excess_blob_gas_and_price();
-
         env.evm_env.block_env.number = env.evm_env.block_env.number.saturating_add(U256::from(1));
 
         // disable nonce checks

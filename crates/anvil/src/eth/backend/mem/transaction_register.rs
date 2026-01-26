@@ -1,9 +1,10 @@
 use crate::eth::backend::mem::{Backend, TransactionAccessSimulationResult};
 use crate::eth::error::BlockchainError;
-use alloy_primitives::TxHash;
-use anvil_core::eth::transaction::TypedTransaction;
+use alloy_primitives::aliases::I512;
+use alloy_primitives::{Address, TxHash};
+use anvil_core::eth::transaction::{PendingTransaction, TypedTransaction};
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -43,9 +44,94 @@ impl TransactionRegister {
         Ok((hash, self.inner.read().get_simulation(&hash).unwrap()))
     }
 
+    pub fn get_simulation(
+        &self,
+        hash: TxHash,
+        backend: &Backend,
+    ) -> Option<Arc<TransactionAccessSimulationResult>> {
+        self.ensure_current_block(backend.best_number());
+        self.inner.read().get_simulation(&hash)
+    }
+
     pub fn get_raw_transaction(&self, hash: TxHash, backend: &Backend) -> Option<TypedTransaction> {
         self.ensure_current_block(backend.best_number());
         self.inner.read().get_raw_transaction(&hash)
+    }
+
+    pub fn get_raw_transactions(
+        &self,
+        hashes: &Vec<TxHash>,
+        backend: &Backend,
+    ) -> Option<Vec<TypedTransaction>> {
+        self.ensure_current_block(backend.best_number());
+        hashes.iter().map(|hash| self.inner.read().get_raw_transaction(hash)).collect()
+    }
+
+    pub fn get_pending_tx(&self, hash: &TxHash) -> PendingTransaction {
+        PendingTransaction::new(self.inner.read().get_raw_transaction(hash).unwrap()).unwrap()
+    }
+
+    pub fn get_pending_txs(&self, hashes: &Vec<TxHash>) -> Vec<PendingTransaction> {
+        hashes
+            .iter()
+            .map(|hash| {
+                PendingTransaction::new(self.inner.read().get_raw_transaction(hash).unwrap())
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    pub fn find_transaction_with_nonce(
+        &self,
+        sender: &Address,
+        nonce: u64,
+        used: &HashSet<TxHash>,
+    ) -> Option<TxHash> {
+        self.inner
+            .read()
+            .simulations
+            .read()
+            // iterate over all simulations
+            .iter()
+            .filter(|(hash, s)| {
+                if used.contains(*hash) {
+                    return false;
+                }
+
+                if s.sender == *sender && s.nonces_required[0].0 == *sender {
+                    // transaction sender is the account in question
+                    s.nonces_required[0].1 == nonce
+                } else {
+                    // even if the sender is not the account in question,
+                    // due to EIP-7702 (set code transactions) a transaction of
+                    // another account can change the nonce of the account via an authorization
+                    s.nonces_possible.iter().any(|(a, v)| *a == *sender && *v == nonce)
+                }
+            })
+            .map(|(hash, _)| *hash)
+            .next() // take one transaction hash
+    }
+
+    pub fn find_transaction_paying(
+        &self,
+        recipient: &Address,
+        used: &HashSet<TxHash>,
+    ) -> Vec<TxHash> {
+        self.inner
+            .read()
+            .simulations
+            .read()
+            // iterate over all simulations
+            .iter()
+            .filter(|(hash, s)| {
+                if used.contains(*hash) {
+                    return false;
+                }
+
+                s.transfer_diffs.iter().any(|(acc, diff)| *acc == *recipient && *diff > I512::ZERO)
+            })
+            .map(|(hash, _)| *hash)
+            .collect()
     }
 
     fn ensure_current_block(&self, cur_block_number: u64) {

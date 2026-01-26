@@ -143,6 +143,7 @@ use std::{
 use storage::{Blockchain, DEFAULT_HISTORY_LIMIT, MinedTransaction};
 use tokio::sync::RwLock as AsyncRwLock;
 
+pub mod batching;
 pub mod cache;
 pub mod concurrent_proposer;
 pub mod fork_db;
@@ -4189,7 +4190,7 @@ impl TransactionValidator for Backend {
 /// This method is adapted from `validate_pool_transaction_for`
 /// and performs validity checks on the transaction to confirm
 /// that it is includable.
-fn validate_transation_includability(
+pub fn validate_transation_includability(
     pending: &PendingTransaction,
     account: &AccountInfo,
     env: &Env,

@@ -166,6 +166,10 @@ pub enum EthRequest {
     SimulateTransactionByHash(Vec<TxHash>),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_buildBatchByHash", with = "sequence")]
+    BuildBatch(Vec<TxHash>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_registerTransactions", with = "sequence")]
     RegisterTransactions(Vec<Bytes>),
 

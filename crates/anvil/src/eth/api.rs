@@ -3,7 +3,9 @@ use super::{
     sign::build_typed_transaction,
 };
 use crate::eth::backend::mem::{
-    storage::MinedBlockOutcome, transaction_register::TransactionRegister,
+    batching::{SimulationExecutionState, build_batch},
+    storage::MinedBlockOutcome,
+    transaction_register::TransactionRegister,
 };
 use crate::eth::error::PoolError::AlreadyImported;
 use crate::{
@@ -281,6 +283,7 @@ impl EthApi {
             EthRequest::SimulateTransactionByHash(hashes) => {
                 self.anvil_simulate_transaction_by_hashes(hashes).await.to_rpc_result()
             }
+            EthRequest::BuildBatch(hashes) => self.anvil_build_batch(hashes).await.to_rpc_result(),
             EthRequest::RegisterTransactions(txs) => {
                 self.anvil_register_transactions(txs).await.to_rpc_result()
             }
@@ -1265,11 +1268,11 @@ impl EthApi {
         &self,
         hashes: Vec<TxHash>,
     ) -> Result<Vec<TransactionAccessSimulationResult>> {
-        let mut parsed_txs = vec![];
+        let mut txs = vec![];
         for hash in hashes {
             let tx_opt = self.transaction_register.get_raw_transaction(hash, &self.backend);
             match tx_opt {
-                Some(tx) => parsed_txs.push(tx),
+                Some(tx) => txs.push(PendingTransaction::new(tx)?),
                 None => {
                     return Err(BlockchainError::Message(format!(
                         "transaction not found: {}",
@@ -1279,7 +1282,18 @@ impl EthApi {
             }
         }
 
-        let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
+        // let res = self.backend.simulate_transaction_state_access(parsed_txs).await?;
+        let sim_state = SimulationExecutionState::new(&self.backend).await?;
+        let (res, _) = sim_state.simulate_transactions(txs).await;
+        res
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildBatchByHash`
+    pub async fn anvil_build_batch(&self, hashes: Vec<TxHash>) -> Result<Vec<TxHash>> {
+        let sim_state = SimulationExecutionState::new(&self.backend).await?;
+        let res =
+            Box::pin(build_batch(&self.transaction_register, &self.backend, hashes, sim_state))
+                .await;
         Ok(res)
     }
 
