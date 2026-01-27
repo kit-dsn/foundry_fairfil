@@ -258,7 +258,7 @@ async fn find_transaction_depencencies(
                             found_funds = found_funds
                                 .saturating_add(U256::from(transfer_diff.unsigned_abs()));
 
-                            let (o_repl, o_map, s) = Box::pin(find_transaction_depencencies(
+                            let (o_repl, mut o_map, s) = Box::pin(find_transaction_depencencies(
                                 other,
                                 register,
                                 backend,
@@ -270,6 +270,8 @@ async fn find_transaction_depencencies(
                             repl.append(
                                 &mut o_repl.into_iter().filter(|x| !repl.contains(x)).collect(),
                             );
+
+                            o_map.entry(other).or_insert(Vec::new()).push(tx.clone());
 
                             // merge transaction dependency map
                             tx_map = merge_tx_maps(tx_map, o_map);
