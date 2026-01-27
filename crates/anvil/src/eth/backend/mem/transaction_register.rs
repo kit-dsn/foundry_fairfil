@@ -141,6 +141,42 @@ impl TransactionRegister {
             *self.prev_block_number.write() = cur_block_number
         }
     }
+
+    pub fn restrict_mempool(
+        &self,
+        restricted: &Vec<TxHash>,
+    ) -> Result<TransactionRegister, BlockchainError> {
+        let restricted_register = TransactionRegister::default();
+        *restricted_register.prev_block_number.write() = *self.prev_block_number.read();
+
+        restricted.iter().try_for_each(|hash| {
+            let raw_tx = self
+                .inner
+                .read()
+                .get_raw_transaction(hash)
+                .ok_or(BlockchainError::TransactionNotFound)?;
+            let sim = self
+                .inner
+                .read()
+                .get_simulation(hash)
+                .ok_or(BlockchainError::TransactionNotFound)?;
+
+            {
+                let inner = restricted_register.inner.write();
+                inner.transactions.write().insert(*hash, raw_tx.clone());
+                inner.simulations.write().insert(*hash, sim);
+            }
+
+            Ok::<(), BlockchainError>(())
+        })?;
+
+        Ok(restricted_register)
+    }
+
+    pub fn has(&self, tx: &TxHash) -> bool {
+        self.inner.read().transactions.read().contains_key(tx)
+            && self.inner.read().simulations.read().contains_key(tx)
+    }
 }
 
 #[derive(Debug, Default)]

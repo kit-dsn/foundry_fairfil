@@ -30,26 +30,46 @@ pub async fn build_batch(
     register: &TransactionRegister,
     backend: &Backend,
     bucket: Vec<TxHash>,
-    mut sim_state: Box<SimulationExecutionState>,
-) -> Vec<TxHash> {
-    // first simulate all transactions individually to check their general includability
-    // let (simulations, mut sim_state) = sim_state
-    //     .simulate_transaction_individually(
-    //         register
-    //             .get_raw_transactions(&bucket, backend)
-    //             .unwrap()
-    //             .into_iter()
-    //             .map(|t| PendingTransaction::new(t).unwrap())
-    //             .collect(),
-    //     )
-    //     .await;
+    sim_state: Box<SimulationExecutionState>,
+) -> (Vec<TxHash>, Box<SimulationExecutionState>) {
+    inner_build_batch(register, backend, bucket, sim_state, &Vec::new()).await
+}
 
+pub async fn build_extended_batch(
+    register: &TransactionRegister,
+    backend: &Backend,
+    bucket: Vec<TxHash>,
+    sim_state: Box<SimulationExecutionState>,
+    primary_batch: &Vec<TxHash>,
+) -> (Vec<TxHash>, Box<SimulationExecutionState>) {
+    inner_build_batch(register, backend, bucket, sim_state, primary_batch).await
+}
+
+async fn inner_build_batch(
+    register: &TransactionRegister,
+    backend: &Backend,
+    bucket: Vec<TxHash>,
+    mut sim_state: Box<SimulationExecutionState>,
+    already_included: &Vec<TxHash>,
+) -> (Vec<TxHash>, Box<SimulationExecutionState>) {
     let mut includable = vec![];
     let mut tx_map = HashMap::new();
 
+    // filter out transactions which are not registered
+    let restricted_bucket: Vec<TxHash> = bucket.into_iter().filter(|x| register.has(x)).collect();
+
     // Test if the transactions in the bucket are includable
-    for tx_hash in bucket {
-        let sim = register.get_simulation(tx_hash, backend).unwrap();
+    for tx_hash in restricted_bucket {
+        let sim = {
+            if already_included.len() == 0 {
+                register.get_simulation(tx_hash, backend).unwrap()
+            } else {
+                let (s, _sim_state) =
+                    sim_state.simulate_transaction(register.get_pending_tx(&tx_hash)).await;
+                sim_state = Box::new(_sim_state);
+                Arc::new(s.unwrap())
+            }
+        };
 
         if sim.errors.len() == 0 {
             // transaction is (i.G.) includable
@@ -61,7 +81,7 @@ pub async fn build_batch(
                 register,
                 backend,
                 sim_state,
-                HashSet::new(),
+                HashSet::from_iter(already_included.iter().cloned()),
             ))
             .await;
 
@@ -134,7 +154,9 @@ pub async fn build_batch(
                         register,
                         backend,
                         Box::new(s),
-                        HashSet::from_iter(batch.iter().cloned()),
+                        HashSet::from_iter(
+                            already_included.iter().cloned().chain(batch.iter().cloned()),
+                        ),
                     )
                     .await;
 
@@ -156,7 +178,7 @@ pub async fn build_batch(
         }
     }
 
-    batch
+    (batch, sim_state)
 }
 
 fn merge_tx_maps(

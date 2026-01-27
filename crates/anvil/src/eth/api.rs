@@ -3,7 +3,7 @@ use super::{
     sign::build_typed_transaction,
 };
 use crate::eth::backend::mem::{
-    batching::{SimulationExecutionState, build_batch},
+    batching::{SimulationExecutionState, build_batch, build_extended_batch},
     storage::MinedBlockOutcome,
     transaction_register::TransactionRegister,
 };
@@ -284,11 +284,24 @@ impl EthApi {
                 self.anvil_simulate_transaction_by_hashes(hashes).await.to_rpc_result()
             }
             EthRequest::BuildBatch(hashes) => self.anvil_build_batch(hashes).await.to_rpc_result(),
+            EthRequest::BuildBatchRestricted(hashes, mempool) => {
+                self.anvil_build_batch_restricted(hashes, mempool).await.to_rpc_result()
+            }
+            EthRequest::BuildExtendedBatch(primary, secondary) => {
+                self.anvil_build_extended_batch(primary, secondary).await.to_rpc_result()
+            }
+            EthRequest::BuildExtendedBatchRestricted(primary, secondary, mempool) => self
+                .anvil_build_extended_batch_restricted(primary, secondary, mempool)
+                .await
+                .to_rpc_result(),
             EthRequest::RegisterTransactions(txs) => {
                 self.anvil_register_transactions(txs).await.to_rpc_result()
             }
             EthRequest::CyclingHighest(batches) => {
                 self.anvil_cycling_highest(batches).await.to_rpc_result()
+            }
+            EthRequest::CyclingHighestByHash(batches) => {
+                self.anvil_cycling_highest_by_hash(batches).await.to_rpc_result()
             }
             EthRequest::EthCall(call, block, state_override, block_overrides) => self
                 .call(call, block, EvmOverrides::new(state_override, block_overrides))
@@ -1291,10 +1304,75 @@ impl EthApi {
     /// Handler for ETH RPC call: `anvil_buildBatchByHash`
     pub async fn anvil_build_batch(&self, hashes: Vec<TxHash>) -> Result<Vec<TxHash>> {
         let sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
-        let res =
+        let (batch, _) =
             Box::pin(build_batch(&self.transaction_register, &self.backend, hashes, sim_state))
                 .await;
-        Ok(res)
+        Ok(batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildRestrictedBatchByHash`
+    pub async fn anvil_build_batch_restricted(
+        &self,
+        hashes: Vec<TxHash>,
+        mempool: Vec<TxHash>,
+    ) -> Result<Vec<TxHash>> {
+        let sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let restricted_registry = self.transaction_register.restrict_mempool(&mempool)?;
+
+        let (batch, _) =
+            Box::pin(build_batch(&restricted_registry, &self.backend, hashes, sim_state)).await;
+        Ok(batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildExtendedBatchByHash`
+    pub async fn anvil_build_extended_batch(
+        &self,
+        primary: Vec<TxHash>,
+        secondary: Vec<TxHash>,
+    ) -> Result<Vec<TxHash>> {
+        let sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+
+        let (mut primary_batch, new_sim_state) =
+            Box::pin(build_batch(&self.transaction_register, &self.backend, primary, sim_state))
+                .await;
+
+        let (mut secondary_batch, _) = Box::pin(build_extended_batch(
+            &self.transaction_register,
+            &self.backend,
+            secondary,
+            new_sim_state,
+            &primary_batch,
+        ))
+        .await;
+
+        primary_batch.append(&mut secondary_batch);
+        Ok(primary_batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildRestrictedExtendedBatchByHash`
+    pub async fn anvil_build_extended_batch_restricted(
+        &self,
+        primary: Vec<TxHash>,
+        secondary: Vec<TxHash>,
+        mempool: Vec<TxHash>,
+    ) -> Result<Vec<TxHash>> {
+        let sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let restricted_registry = self.transaction_register.restrict_mempool(&mempool)?;
+
+        let (mut primary_batch, new_sim_state) =
+            Box::pin(build_batch(&restricted_registry, &self.backend, primary, sim_state)).await;
+
+        let (mut secondary_batch, _) = Box::pin(build_extended_batch(
+            &restricted_registry,
+            &self.backend,
+            secondary,
+            new_sim_state,
+            &primary_batch,
+        ))
+        .await;
+
+        primary_batch.append(&mut secondary_batch);
+        Ok(primary_batch)
     }
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
@@ -1373,6 +1451,26 @@ impl EthApi {
 
                 parsed_txs.push(transaction);
             }
+
+            parsed_batches.push(parsed_txs);
+        }
+
+        Ok(self.backend.concurrent_proposers_cycling_highest(parsed_batches).await?)
+    }
+
+    /// Handler for ETH RPC call: `anvil_cyclingHighestByHash`
+    pub async fn anvil_cycling_highest_by_hash(
+        &self,
+        batches: Vec<Vec<TxHash>>,
+    ) -> Result<CyclingHighestOutput> {
+        node_info!("anvil_cyclingHighestByHash");
+
+        let mut parsed_batches: Vec<Vec<TypedTransaction>> = vec![];
+        for batch in batches {
+            let parsed_txs = self
+                .transaction_register
+                .get_raw_transactions(&batch, &self.backend)
+                .ok_or(BlockchainError::TransactionNotFound)?;
 
             parsed_batches.push(parsed_txs);
         }

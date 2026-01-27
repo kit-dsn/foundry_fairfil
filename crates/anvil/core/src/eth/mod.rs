@@ -170,12 +170,28 @@ pub enum EthRequest {
     BuildBatch(Vec<TxHash>),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_buildRestrictedBatchByHash", with = "sequence")]
+    BuildBatchRestricted(Vec<TxHash>, Vec<TxHash>),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_buildExtendedBatchByHash", with = "sequence")]
+    BuildExtendedBatch(Vec<TxHash>, Vec<TxHash>),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_buildRestrictedExtendedBatchByHash", with = "sequence")]
+    BuildExtendedBatchRestricted(Vec<TxHash>, Vec<TxHash>, Vec<TxHash>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_registerTransactions", with = "sequence")]
     RegisterTransactions(Vec<Bytes>),
 
     /// non-standard endpoint
     #[serde(rename = "anvil_cyclingHighest", with = "sequence")]
     CyclingHighest(Vec<Vec<Bytes>>),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_cyclingHighestByHash", with = "sequence")]
+    CyclingHighestByHash(Vec<Vec<TxHash>>),
 
     #[serde(rename = "eth_call")]
     EthCall(
