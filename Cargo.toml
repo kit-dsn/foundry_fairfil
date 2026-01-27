@@ -71,6 +71,7 @@ all = "warn"
 # Uncomment this section if you're using a debugger.
 [profile.dev]
 # https://davidlattimore.github.io/posts/2024/02/04/speeding-up-the-rust-edit-build-run-cycle.html
+opt-level = 1
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 

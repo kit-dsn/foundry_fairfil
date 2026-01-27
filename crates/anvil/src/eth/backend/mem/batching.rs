@@ -30,7 +30,7 @@ pub async fn build_batch(
     register: &TransactionRegister,
     backend: &Backend,
     bucket: Vec<TxHash>,
-    mut sim_state: SimulationExecutionState,
+    mut sim_state: Box<SimulationExecutionState>,
 ) -> Vec<TxHash> {
     // first simulate all transactions individually to check their general includability
     // let (simulations, mut sim_state) = sim_state
@@ -138,14 +138,14 @@ pub async fn build_batch(
                     // tx is now includable!
                     println!(" -> includable");
                     includable.push(other_hash);
-                    sim_state = s;
+                    sim_state = Box::new(s);
                 } else {
                     // try finding dependencies again
                     let (dep_repl, dep_map, s) = find_transaction_depencencies(
                         other_hash,
                         register,
                         backend,
-                        s,
+                        Box::new(s),
                         HashSet::from_iter(batch.iter().cloned()),
                     )
                     .await;
@@ -189,16 +189,16 @@ async fn find_transaction_depencencies(
     tx: TxHash,
     register: &TransactionRegister,
     backend: &Backend,
-    sim_state: SimulationExecutionState,
+    sim_state: Box<SimulationExecutionState>,
     used: HashSet<TxHash>,
-) -> (Vec<TxHash>, HashMap<TxHash, Vec<TxHash>>, SimulationExecutionState) {
+) -> (Vec<TxHash>, HashMap<TxHash, Vec<TxHash>>, Box<SimulationExecutionState>) {
     let (sim_res, mut sim_state) =
         sim_state.simulate_transaction(register.get_pending_tx(&tx)).await;
     let mut sim = sim_res.unwrap();
 
     if sim.errors.len() == 0 {
         // transaction is includable!
-        return (vec![tx], HashMap::new(), sim_state);
+        return (vec![tx], HashMap::new(), Box::new(sim_state));
     } else {
         // transaction is (currently) not includable
         let sim_error = sim.errors.pop().unwrap();
@@ -222,7 +222,7 @@ async fn find_transaction_depencencies(
                                 other,
                                 register,
                                 backend,
-                                sim_state,
+                                Box::new(sim_state),
                                 used_with_tx,
                             ))
                             .await;
@@ -231,7 +231,7 @@ async fn find_transaction_depencencies(
                         return (o_repl, o_map, sim_state);
                     } else {
                         // no transaction found
-                        return (Vec::new(), HashMap::new(), sim_state);
+                        return (Vec::new(), HashMap::new(), Box::new(sim_state));
                     }
                 } else if let InvalidTransactionError::InsufficientFunds = invalid_error {
                     // look for transactions with transfers to sender
@@ -262,7 +262,7 @@ async fn find_transaction_depencencies(
                                 other,
                                 register,
                                 backend,
-                                s,
+                                Box::new(s),
                                 used_with_tx.clone(),
                             ))
                             .await;
@@ -274,7 +274,7 @@ async fn find_transaction_depencencies(
                             // merge transaction dependency map
                             tx_map = merge_tx_maps(tx_map, o_map);
 
-                            sim_state = s;
+                            sim_state = *s;
                         } else {
                             sim_state = s;
                         }
@@ -285,18 +285,18 @@ async fn find_transaction_depencencies(
                     }
 
                     if found_funds >= missing_funds {
-                        return (repl, tx_map, sim_state);
+                        return (repl, tx_map, Box::new(sim_state));
                     } else {
                         // did not find enough funds
-                        return (Vec::new(), HashMap::new(), sim_state);
+                        return (Vec::new(), HashMap::new(), Box::new(sim_state));
                     }
                 }
 
-                return (Vec::new(), HashMap::new(), sim_state);
+                return (Vec::new(), HashMap::new(), Box::new(sim_state));
             }
             SimulationError::BlockGasExhausted | SimulationError::BlockBlobGasExhausted => {
                 // at this state, the transaction definetely is no longer includable.
-                return (Vec::new(), HashMap::new(), sim_state);
+                return (Vec::new(), HashMap::new(), Box::new(sim_state));
             }
         }
     }

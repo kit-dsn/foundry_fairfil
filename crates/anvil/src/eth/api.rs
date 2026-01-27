@@ -1290,7 +1290,7 @@ impl EthApi {
 
     /// Handler for ETH RPC call: `anvil_buildBatchByHash`
     pub async fn anvil_build_batch(&self, hashes: Vec<TxHash>) -> Result<Vec<TxHash>> {
-        let sim_state = SimulationExecutionState::new(&self.backend).await?;
+        let sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
         let res =
             Box::pin(build_batch(&self.transaction_register, &self.backend, hashes, sim_state))
                 .await;
