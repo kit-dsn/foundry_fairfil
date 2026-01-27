@@ -53,11 +53,9 @@ pub async fn build_batch(
 
         if sim.errors.len() == 0 {
             // transaction is (i.G.) includable
-            println!("include {}", tx_hash);
             includable.push(tx_hash)
         } else {
             // this transaction has dependencies that we need to find!
-            println!("non includable {}", tx_hash);
             let (dep_repl, dep_map, s) = Box::pin(find_transaction_depencencies(
                 tx_hash,
                 register,
@@ -67,8 +65,6 @@ pub async fn build_batch(
             ))
             .await;
 
-            println!("non includable {} {:?}", tx_hash, dep_repl);
-
             includable
                 .append(&mut dep_repl.into_iter().filter(|x| !includable.contains(x)).collect());
             tx_map = merge_tx_maps(tx_map, dep_map);
@@ -76,8 +72,6 @@ pub async fn build_batch(
             sim_state = s;
         }
     }
-
-    println!("preparation done.");
 
     let mut batch = Vec::new();
 
@@ -102,17 +96,13 @@ pub async fn build_batch(
             batch.push(winning_tx);
             includable.retain(|x| *x != winning_tx);
 
-            println!("include {}", winning_tx);
-
             // execute the transaction
             sim_state.execute_transaction(pending_tx.clone()).unwrap();
 
             // check transaction map to now include transaction that have become includable
             for other_hash in tx_map.get(&winning_tx).unwrap_or(&Vec::new()).clone() {
-                println!(" -> include dependency {}", other_hash);
                 if batch.contains(&other_hash) || includable.contains(&other_hash) {
                     // transaction is already included into includable or batch
-                    println!(" -> already done.");
                     continue;
                 }
 
@@ -124,7 +114,6 @@ pub async fn build_batch(
                     // there is another transaction map that references other_hash
                     // so other_hash requires that the another transaction is included into here
                     // too.
-                    println!(" -> another reference.");
                     continue;
                 }
 
@@ -136,7 +125,6 @@ pub async fn build_batch(
 
                 if other_sim.errors.len() == 0 {
                     // tx is now includable!
-                    println!(" -> includable");
                     includable.push(other_hash);
                     sim_state = Box::new(s);
                 } else {
@@ -149,8 +137,6 @@ pub async fn build_batch(
                         HashSet::from_iter(batch.iter().cloned()),
                     )
                     .await;
-
-                    println!(" -> non-includable {:?}", dep_repl);
 
                     includable.append(
                         &mut dep_repl.into_iter().filter(|x| !includable.contains(x)).collect(),
@@ -216,7 +202,6 @@ async fn find_transaction_depencencies(
                         sim.nonces_required[0].1 - 1,
                         &used_with_tx,
                     ) {
-                        println!("{} -> {}", tx, other);
                         let (o_repl, mut o_map, sim_state) =
                             Box::pin(find_transaction_depencencies(
                                 other,
