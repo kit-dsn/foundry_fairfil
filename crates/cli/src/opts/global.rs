@@ -104,7 +104,11 @@ impl GlobalArgs {
         {
             builder.worker_threads(threads);
         }
-        builder.enable_all().build().expect("failed to create tokio runtime")
+        builder
+            .thread_stack_size(5 * 1024 * 1024) // increase stack size to 5MB
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime")
     }
 
     /// Creates a new tokio runtime and blocks on the future.
