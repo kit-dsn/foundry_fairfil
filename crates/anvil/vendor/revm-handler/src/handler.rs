@@ -172,7 +172,10 @@ pub trait Handler {
     /// For EIP-7702 transactions, applies the authorization list and delegates successful authorizations.
     /// Returns the gas refund amount from EIP-7702. Authorizations are applied before execution begins.
     #[inline]
-    fn pre_execution(&self, evm: &mut Self::Evm) -> Result<(u64, U256, Vec<(Address, u64)>), Self::Error> {
+    fn pre_execution(
+        &self,
+        evm: &mut Self::Evm,
+    ) -> Result<(u64, U256, Vec<(Address, u64)>), Self::Error> {
         let gas_balance_spending = self.validate_against_state_and_deduct_caller(evm)?;
         self.load_accounts(evm)?;
 
@@ -225,7 +228,7 @@ pub trait Handler {
         self.eip7623_check_gas_floor(evm, exec_result, init_and_floor_gas);
         // Return unused gas to caller
         let (refund, effective_gas_price) = self.reimburse_caller(evm, exec_result)?;
-        // Pay transaction fees to beneficiary
+
         let reward = self.reward_beneficiary(evm, exec_result)?;
         Ok((refund, effective_gas_price, reward))
     }
@@ -265,7 +268,10 @@ pub trait Handler {
     ///
     /// Returns the gas refund amount specified by EIP-7702.
     #[inline]
-    fn apply_eip7702_auth_list(&self, evm: &mut Self::Evm) -> Result<(u64, Vec<(Address, u64)>), Self::Error> {
+    fn apply_eip7702_auth_list(
+        &self,
+        evm: &mut Self::Evm,
+    ) -> Result<(u64, Vec<(Address, u64)>), Self::Error> {
         pre_execution::apply_eip7702_auth_list(evm.ctx())
     }
 

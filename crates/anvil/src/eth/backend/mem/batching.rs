@@ -6,7 +6,9 @@ use alloy_primitives::aliases::I512;
 use alloy_primitives::{Address, FixedBytes, TxHash, U256};
 use anvil_core::eth::transaction::PendingTransaction;
 use itertools::Itertools;
+use op_revm::OpHaltReason;
 use revm::DatabaseCommit;
+use revm::context::result::{ExecResultAndState, ExecutionResult};
 use revm::{context::result::EVMError, database::CacheDB};
 use revm_inspectors::tracing::types::StorageChange;
 
@@ -338,7 +340,7 @@ impl SimulationExecutionState {
     }
 
     /// Returns the gas limit of the block being simulated
-    fn gas_limit(&self) -> u64 {
+    pub fn gas_limit(&self) -> u64 {
         self.env.evm_env.block_env.gas_limit
     }
 
@@ -352,7 +354,10 @@ impl SimulationExecutionState {
     }
 
     /// Checks transaction includability
-    async fn check_includability(&mut self, tx: Arc<PendingTransaction>) -> Vec<SimulationError> {
+    pub async fn check_includability(
+        &mut self,
+        tx: Arc<PendingTransaction>,
+    ) -> Vec<SimulationError> {
         let max_blob_gas = self.blob_gas_limit();
         let max_block_gas = self.gas_limit();
         Self::check_includability_inner(
@@ -397,7 +402,8 @@ impl SimulationExecutionState {
     pub fn execute_transaction(
         &mut self,
         tx: Arc<PendingTransaction>,
-    ) -> Result<(), TransactionExecutionOutcome> {
+    ) -> Result<ExecResultAndState<ExecutionResult<OpHaltReason>>, TransactionExecutionOutcome>
+    {
         let mut inspector = AnvilInspector::default();
 
         let mut evm = new_evm_with_inspector_ref(&self.cache_db, &self.env, &mut inspector);
@@ -425,15 +431,32 @@ impl SimulationExecutionState {
                 }
             }
             Ok(result_state) => {
-                self.cache_db.commit(result_state.state);
+                self.cache_db.commit(result_state.state.clone());
 
                 self.gas_used = self.gas_used.saturating_add(result_state.result.gas_used());
                 self.blob_gas_used =
                     self.blob_gas_used.saturating_add(tx.transaction.blob_gas().unwrap_or(0));
 
-                return Ok(());
+                return Ok(result_state);
             }
         }
+    }
+
+    /// Return the base fee for the block
+    pub fn base_fee(&self) -> u64 {
+        self.env.evm_env.block_env.basefee
+    }
+
+    /// Disables the transfer of priority fees to the beneficiary of the block
+    pub fn disable_priority_fee_transfer(mut self) -> Self {
+        self.env.evm_env.cfg_env.disable_priority_fee_transfer = true;
+        self
+    }
+
+    /// Sets a custom gas limit
+    pub fn set_gas_limit(mut self, limit: u64) -> Self {
+        self.env.evm_env.block_env.gas_limit = limit;
+        self
     }
 
     pub async fn simulate_transaction(
@@ -448,14 +471,23 @@ impl SimulationExecutionState {
     }
 
     pub async fn simulate_transactions(
+        self,
+        txs: Vec<PendingTransaction>,
+    ) -> (Result<Vec<TransactionAccessSimulationResult>, BlockchainError>, Self) {
+        let gas_limit = self.gas_limit();
+        self.simulate_transactions_with_limit(txs, gas_limit).await
+    }
+
+    pub async fn simulate_transactions_with_limit(
         mut self,
         txs: Vec<PendingTransaction>,
+        limit: u64,
     ) -> (Result<Vec<TransactionAccessSimulationResult>, BlockchainError>, Self) {
         let mut env = self.env.clone();
 
         // running value for block gas usage
         let mut gas_used = 0 as u64;
-        let gas_limit = self.gas_limit();
+        let gas_limit = limit;
         // running value for block blob gas usage
         let mut blob_gas_used = 0 as u64;
 

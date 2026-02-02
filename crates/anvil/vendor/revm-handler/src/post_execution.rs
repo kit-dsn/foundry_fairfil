@@ -43,10 +43,7 @@ pub fn reimburse_caller<CTX: ContextTr>(
     );
 
     // Return balance of not spend gas.
-    context.journal_mut().balance_incr(
-        caller,
-         refund + additional_refund,
-    )?;
+    context.journal_mut().balance_incr(caller, refund + additional_refund)?;
 
     Ok((refund, effective_gas_price))
 }
@@ -71,11 +68,10 @@ pub fn reward_beneficiary<CTX: ContextTr>(
 
     let reward = U256::from(coinbase_gas_price * gas.used() as u128);
 
-    // reward beneficiary
-    context.journal_mut().balance_incr(
-        beneficiary,
-        reward,
-    )?;
+    // reward beneficiary if not disabled
+    if !context.cfg().is_priority_fee_transfer_disabled() {
+        context.journal_mut().balance_incr(beneficiary, reward)?;
+    }
 
     Ok(reward)
 }
@@ -99,17 +95,10 @@ pub fn output<CTX: ContextTr<Journal: JournalTr>, HALTREASON: HaltReasonTr>(
     let logs = context.journal_mut().take_logs();
 
     match SuccessOrHalt::<HALTREASON>::from(instruction_result.result) {
-        SuccessOrHalt::Success(reason) => ExecutionResult::Success {
-            reason,
-            gas_used,
-            gas_refunded,
-            logs,
-            output,
-        },
-        SuccessOrHalt::Revert => ExecutionResult::Revert {
-            gas_used,
-            output: output.into_data(),
-        },
+        SuccessOrHalt::Success(reason) => {
+            ExecutionResult::Success { reason, gas_used, gas_refunded, logs, output }
+        }
+        SuccessOrHalt::Revert => ExecutionResult::Revert { gas_used, output: output.into_data() },
         SuccessOrHalt::Halt(reason) => ExecutionResult::Halt { reason, gas_used },
         // Only two internal return flags.
         flag @ (SuccessOrHalt::FatalExternalError | SuccessOrHalt::Internal(_)) => {

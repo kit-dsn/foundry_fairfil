@@ -6,8 +6,8 @@ use crate::eth::{
         env::Env,
         executor::TransactionExecutionOutcome,
         mem::{
-            Backend, TransactionAccessSimulationResult, inspector::AnvilInspector,
-            storage::MinedBlockOutcome,
+            Backend, TransactionAccessSimulationResult, batching::SimulationExecutionState,
+            inspector::AnvilInspector, storage::MinedBlockOutcome,
         },
         validate::TransactionValidator,
     },
@@ -26,6 +26,20 @@ use revm::{
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
+pub struct CommonCyclingHighestOutput {
+    /// The block (number) that was mined
+    pub block_number: u64,
+    /// the mined block
+    pub block: MinedBlockOutcome,
+    /// simulation of all included transactions
+    pub block_sim: Vec<TransactionAccessSimulationResult>,
+    /// transaction (hashes) that failed and were not included into the block
+    pub failed_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)>,
+    /// distribution of gas usage per batch (proposer)
+    pub priority_fees_per_proposer: Vec<U256>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct CyclingHighestOutput {
     /// The block (number) that was mined
     pub block_number: u64,
@@ -40,6 +54,179 @@ pub struct CyclingHighestOutput {
 }
 
 impl Backend {
+    pub async fn concurrent_proposers_common_cycling_highest(
+        &self,
+        mut batches: Vec<Vec<PendingTransaction>>,
+    ) -> Result<CommonCyclingHighestOutput, BlockchainError> {
+        // create a SimulationExecutionState with disabled priority fee transfers
+        let mut exec_state =
+            SimulationExecutionState::new(&self).await?.disable_priority_fee_transfer();
+
+        // ensure that all batches are valid, i.e., executable
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            // Simulate the batch
+            let (res, e) = {
+                let block_gas_limit = exec_state.gas_limit();
+                exec_state
+                    .simulate_transactions_with_limit(
+                        batch.clone(),
+                        block_gas_limit / (batches.len() as u64) * 5,
+                    )
+                    .await
+            };
+
+            if let Ok(batch_sim) = res {
+                // reject if batch is invalid
+                if batch_sim.iter().any(|s| s.errors.len() > 0) {
+                    return Err(BlockchainError::Message(format!("batch {} invalid", batch_idx)));
+                }
+            }
+
+            exec_state = e; // simulate_transaction takes ownership and returns exec state
+        }
+
+        // contains the transactions of the superblock
+        let mut block: Vec<Arc<PoolTransaction>> = vec![];
+        // map of all seen transactions and the amount of gas used
+        let mut seen_txs: HashMap<FixedBytes<32>, u64> = HashMap::new();
+        let mut gas_contributed = vec![0 as u64; batches.len()];
+
+        let mut failing_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)> = vec![];
+
+        loop {
+            // in all batches, remove all transactions that are already included into the block
+            batches.iter_mut().enumerate().for_each(|(batch_idx, batch)| {
+                for (idx, tx) in batch.iter().enumerate() {
+                    if !seen_txs.contains_key(tx.hash()) {
+                        // the transaction at position idx is not already included
+                        // remove the previous transactions from the batch
+                        *batch = batch.split_off(idx);
+                        break;
+                    } else {
+                        // the transaction is alredy included, batch proposer gets the gas used attributed
+                        gas_contributed[batch_idx] = gas_contributed[batch_idx]
+                            .saturating_add(*seen_txs.get(tx.hash()).unwrap());
+                    }
+                }
+            });
+
+            // grap the transaction with the highest gas price
+            let winner = batches.iter().map(|x| x.get(0)).filter_map(|x| x).max_by_key(|t| {
+                t.to_revm_tx_env().effective_gas_price(exec_state.base_fee() as u128)
+            });
+
+            match winner {
+                None => {
+                    // no more transactions left, break out of the loop
+                    break;
+                }
+                Some(tx) => {
+                    // try to execute the transaction
+                    let tx_hash = *tx.hash();
+                    let tx_arc = Arc::new(tx.clone());
+
+                    let mut errors = exec_state.check_includability(tx_arc.clone()).await;
+                    if errors.len() == 0 {
+                        // transaction is includable!
+                        let r = exec_state.execute_transaction(Arc::new(tx.clone())).unwrap();
+
+                        let tx_gas_used = r.result.gas_used();
+                        block.push(Arc::new(PoolTransaction::new(tx.clone())));
+                        seen_txs.insert(tx_hash, tx_gas_used);
+
+                        // attribute all proposers whose head transaction is the executed transaction
+                        // with the amount of gas contibuted
+                        batches
+                            .iter()
+                            .enumerate()
+                            .map(|(batch_idx, batch)| (batch_idx, batch.get(0)))
+                            .filter(|(_, opt_head)| {
+                                if let Some(head) = opt_head {
+                                    *head.hash() == tx_hash
+                                } else {
+                                    false
+                                }
+                            })
+                            .for_each(|(batch_idx, _)| {
+                                gas_contributed[batch_idx] =
+                                    gas_contributed[batch_idx].saturating_add(tx_gas_used);
+                            });
+                    } else {
+                        // transaction is not includable
+                        // shortcut: mark as 'seen' with gas usage 0
+                        seen_txs.insert(tx_hash, 0);
+                        failing_transactions.push((
+                            tx_hash,
+                            errors
+                                .remove(0)
+                                .into_outcome(Arc::new(PoolTransaction::new(tx.clone()))),
+                        ));
+                    }
+
+                    // remove the transaction from the head of all stacks
+                    batches.iter_mut().for_each(|batch| {
+                        if let Some(head) = batch.get(0)
+                            && *head.hash() == tx_hash
+                        {
+                            batch.remove(0);
+                        }
+                    });
+                }
+            }
+        }
+
+        // run a simulation of the block
+        let block_simulation = self
+            .simulate_transaction_state_access(
+                block
+                    .iter()
+                    .map(|t| t.pending_transaction.transaction.transaction.clone())
+                    .collect(),
+            )
+            .await?;
+
+        // actually build the new block
+        let mined_block_outcome = self.do_mine_block(block).await;
+
+        // build hashmap of gas_usage
+        let mut gas_usage_per_batch = HashMap::new();
+        gas_contributed.iter().enumerate().for_each(|(batch_idx, gas)| {
+            gas_usage_per_batch.insert(batch_idx, *gas as u128);
+        });
+
+        let prio_fee_per_batch: Vec<U256> = {
+            // calculate total priority fees
+            let total_prio_fees = block_simulation
+                .iter()
+                .map(|sim| sim.priority_fee)
+                .fold(U256::ZERO, |acc, v| acc.saturating_add(v));
+
+            let gas_contributed_cap = (2 * exec_state.gas_limit()) / (batches.len() as u64);
+            let contrib: Vec<u64> =
+                gas_contributed.iter().map(|gas| (*gas).min(gas_contributed_cap)).collect();
+
+            let contrib_sum: u64 = contrib.iter().sum();
+
+            contrib
+                .iter()
+                .map(|contributed| {
+                    total_prio_fees
+                        .checked_mul(U256::from(*contributed))
+                        .unwrap()
+                        .wrapping_div(U256::from(contrib_sum))
+                })
+                .collect()
+        };
+
+        Ok(CommonCyclingHighestOutput {
+            block_number: mined_block_outcome.block_number,
+            block: mined_block_outcome,
+            block_sim: block_simulation,
+            failed_transactions: failing_transactions,
+            priority_fees_per_proposer: prio_fee_per_batch,
+        })
+    }
+
     pub async fn concurrent_proposers_cycling_highest(
         &self,
         mut batches: Vec<Vec<TypedTransaction>>,
@@ -54,7 +241,7 @@ impl Backend {
 
         let number_batches = batches.len() as u64; // number of batches = batch proposers
 
-        // let's build the super-block!
+        // let's build the block!
 
         // contains the transactions of the superblock
         let mut block: Vec<TypedTransaction> = vec![];
@@ -66,6 +253,7 @@ impl Backend {
         let mut gas_used = 0 as u64;
         // running value for block blob gas usage
         let mut blob_gas_used = 0 as u64;
+
         // list of failing transactions with reason
         let mut failing_tx: Vec<(FixedBytes<32>, TransactionExecutionOutcome)> = vec![];
 

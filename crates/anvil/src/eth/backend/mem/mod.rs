@@ -10,7 +10,7 @@ use crate::{
             cheats::{CheatEcrecover, CheatsManager},
             db::{Db, MaybeFullDatabase, SerializableState, StateDb},
             env::Env,
-            executor::{ExecutedTransactions, TransactionExecutor},
+            executor::{ExecutedTransactions, TransactionExecutionOutcome, TransactionExecutor},
             fork::ClientFork,
             genesis::GenesisConfig,
             mem::{
@@ -211,6 +211,22 @@ impl Serialize for SimulationError {
             SimulationError::BlockGasExhausted => serializer.serialize_str("BlockGasExhausted"),
             SimulationError::BlockBlobGasExhausted => {
                 serializer.serialize_str("BlockBlobGasExhausted")
+            }
+        }
+    }
+}
+
+impl SimulationError {
+    pub fn into_outcome(self, tx: Arc<PoolTransaction>) -> TransactionExecutionOutcome {
+        match self {
+            SimulationError::InvalidTransaction(invalid_transaction_error) => {
+                TransactionExecutionOutcome::Invalid(tx, invalid_transaction_error)
+            }
+            SimulationError::BlockGasExhausted => {
+                TransactionExecutionOutcome::BlockGasExhausted(tx)
+            }
+            SimulationError::BlockBlobGasExhausted => {
+                TransactionExecutionOutcome::BlobGasExhausted(tx)
             }
         }
     }
