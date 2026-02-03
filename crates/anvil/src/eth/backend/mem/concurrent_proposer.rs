@@ -96,17 +96,23 @@ impl Backend {
         loop {
             // in all batches, remove all transactions that are already included into the block
             batches.iter_mut().enumerate().for_each(|(batch_idx, batch)| {
+                let mut split_idx = batch.len();
                 for (idx, tx) in batch.iter().enumerate() {
                     if !seen_txs.contains_key(tx.hash()) {
                         // the transaction at position idx is not already included
                         // remove the previous transactions from the batch
-                        *batch = batch.split_off(idx);
+                        split_idx = idx;
                         break;
                     } else {
                         // the transaction is alredy included, batch proposer gets the gas used attributed
                         gas_contributed[batch_idx] = gas_contributed[batch_idx]
                             .saturating_add(*seen_txs.get(tx.hash()).unwrap());
                     }
+                }
+                if split_idx == batch.len() {
+                    *batch = vec![];
+                } else {
+                    *batch = batch.split_off(split_idx);
                 }
             });
 
@@ -201,9 +207,11 @@ impl Backend {
                 .map(|sim| sim.priority_fee)
                 .fold(U256::ZERO, |acc, v| acc.saturating_add(v));
 
-            let gas_contributed_cap = (2 * exec_state.gas_limit()) / (batches.len() as u64);
-            let contrib: Vec<u64> =
-                gas_contributed.iter().map(|gas| (*gas).min(gas_contributed_cap)).collect();
+            // let gas_contributed_cap = (2 * exec_state.gas_limit()) / (batches.len() as u64);
+            // let contrib: Vec<u64> =
+            //     gas_contributed.iter().map(|gas| (*gas).min(gas_contributed_cap)).collect();
+
+            let contrib = gas_contributed;
 
             let contrib_sum: u64 = contrib.iter().sum();
 
