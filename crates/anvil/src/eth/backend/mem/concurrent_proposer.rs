@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Rem, sync::Arc};
 
 use crate::eth::{
     backend::{
@@ -57,6 +57,160 @@ pub struct CyclingHighestOutput {
 }
 
 impl Backend {
+    pub async fn concurrent_proposers_strict_cycling(
+        &self,
+        mut batches: Vec<Vec<PendingTransaction>>,
+    ) -> Result<CommonAggregationOutput, BlockchainError> {
+        // create a SimulationExecutionState with disabled priority fee transfers
+        let mut exec_state =
+            SimulationExecutionState::new(&self).await?.disable_priority_fee_transfer();
+
+        // ensure that all batches are valid, i.e., executable
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            // Simulate the batch
+            let (res, e) = {
+                let block_gas_limit = exec_state.gas_limit();
+                exec_state
+                    .simulate_transactions_with_limit(
+                        batch.clone(),
+                        block_gas_limit / (batches.len() as u64) * 5,
+                    )
+                    .await
+            };
+
+            if let Ok(batch_sim) = res {
+                // reject if batch is invalid
+                if batch_sim.iter().any(|s| s.errors.len() > 0) {
+                    return Err(BlockchainError::Message(format!("batch {} invalid", batch_idx)));
+                }
+            }
+
+            exec_state = e; // simulate_transaction takes ownership and returns exec state
+        }
+
+        // contains the transactions of the superblock
+        let mut block: Vec<Arc<PoolTransaction>> = vec![];
+        // map of all seen transactions and the amount of gas used
+        let mut seen_txs: HashSet<FixedBytes<32>> = HashSet::new();
+        let mut priority_fees_per_batch = vec![U256::ZERO; batches.len()];
+        let mut failing_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)> = vec![];
+
+        // the batch index which will include the next transaction
+        let mut next_batch_index = 0;
+        loop {
+            // in all batches, remove all transactions that are already included into the block
+            batches.iter_mut().for_each(|batch| {
+                let mut split_idx = batch.len();
+                for (idx, tx) in batch.iter().enumerate() {
+                    if !seen_txs.contains(tx.hash()) {
+                        // the transaction at position idx is not already included
+                        // remove the previous transactions from the batch
+                        split_idx = idx;
+                        break;
+                    }
+                }
+                if split_idx == batch.len() {
+                    *batch = vec![];
+                } else {
+                    *batch = batch.split_off(split_idx);
+                }
+            });
+
+            // grap the transaction from currentBatchIndex and increment the index
+            let (winner, winner_batch_index) = {
+                let mut selected_index = next_batch_index;
+                let mut tx = batches.get(next_batch_index).unwrap().get(0);
+                next_batch_index = (next_batch_index + 1) % batches.len();
+
+                while tx.is_none() && batches.iter().any(|b| b.len() > 0) {
+                    selected_index = next_batch_index;
+                    tx = batches.get(next_batch_index).unwrap().get(0);
+                    next_batch_index = (next_batch_index + 1) % batches.len();
+                }
+                (tx, selected_index)
+            };
+
+            match winner {
+                None => {
+                    // no more transactions left, break out of the loop
+                    break;
+                }
+                Some(tx) => {
+                    // try to execute the transaction
+                    let tx_hash: FixedBytes<32> = *tx.hash();
+                    let tx_arc = Arc::new(tx.clone());
+
+                    let mut errors = exec_state.check_includability(tx_arc.clone()).await;
+                    if errors.len() == 0 {
+                        // transaction is includable!
+                        let (_, tx_reward) =
+                            exec_state.execute_transaction(Arc::new(tx.clone())).unwrap();
+
+                        block.push(Arc::new(PoolTransaction::new(tx.clone())));
+                        seen_txs.insert(tx_hash);
+
+                        // strict rewarding:
+                        // if the batch proposer whose batch index matches the transaction hash has
+                        // inserted the transaction, they will receive the rewards.
+                        // otherwise, the other batch proposer will only receive the rewards if the
+                        // responsible batch proposer did not include the transaction
+                        let attributed_batch_index = {
+                            let hash_as_number: U256 = tx_hash.into();
+                            let responsible_batch_index: U256 =
+                                hash_as_number.rem(U256::from(batches.len()));
+
+                            if batches[responsible_batch_index.to::<usize>()]
+                                .iter()
+                                .any(|t| *t.hash() == tx_hash)
+                            {
+                                // the transaction appears in the batch responsible for it.
+                                // we don't need to reference the original input batch
+                                // as if the tx was already removed from a batch, it has
+                                // already been processed and we only process each tx once (at most)
+                                responsible_batch_index.to::<usize>()
+                            } else {
+                                winner_batch_index
+                            }
+                        };
+
+                        priority_fees_per_batch[attributed_batch_index] += tx_reward;
+                    } else {
+                        // transaction is not includable
+                        // shortcut: mark as 'seen' with gas usage 0
+                        seen_txs.insert(tx_hash);
+                        failing_transactions.push((
+                            tx_hash,
+                            errors
+                                .remove(0)
+                                .into_outcome(Arc::new(PoolTransaction::new(tx.clone()))),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // run a simulation of the block
+        let block_simulation = self
+            .simulate_transaction_state_access(
+                block
+                    .iter()
+                    .map(|t| t.pending_transaction.transaction.transaction.clone())
+                    .collect(),
+            )
+            .await?;
+
+        // actually build the new block
+        let mined_block_outcome = self.do_mine_block(block).await;
+
+        Ok(CommonAggregationOutput {
+            block_number: mined_block_outcome.block_number,
+            block: mined_block_outcome,
+            block_sim: block_simulation,
+            failed_transactions: failing_transactions,
+            priority_fees_per_proposer: priority_fees_per_batch,
+        })
+    }
+
     pub async fn concurrent_proposers_cycling(
         &self,
         mut batches: Vec<Vec<PendingTransaction>>,

@@ -304,6 +304,12 @@ impl EthApi {
             EthRequest::CyclingByHash(batches) => {
                 self.anvil_cycling_by_hash(batches).await.to_rpc_result()
             }
+            EthRequest::StrictCycling(batches) => {
+                self.anvil_strict_cycling(batches).await.to_rpc_result()
+            }
+            EthRequest::StrictCyclingByHash(batches) => {
+                self.anvil_strict_cycling_by_hash(batches).await.to_rpc_result()
+            }
             EthRequest::CyclingHighest(batches) => {
                 self.anvil_cycling_highest(batches).await.to_rpc_result()
             }
@@ -1519,6 +1525,30 @@ impl EthApi {
     ) -> Result<CommonAggregationOutput> {
         node_info!("anvil_cyclingByHash");
         Ok(self.backend.concurrent_proposers_cycling(self.hashes_to_pending(batches)?).await?)
+    }
+
+    /// Handler for ETH RPC call: `anvil_strictCycling`
+    pub async fn anvil_strict_cycling(
+        &self,
+        batches: Vec<Vec<Bytes>>,
+    ) -> Result<CommonAggregationOutput> {
+        node_info!("anvil_strictCycling");
+        Ok(self
+            .backend
+            .concurrent_proposers_strict_cycling(Self::bytes_to_pending(batches)?)
+            .await?)
+    }
+
+    /// Handler for ETH RPC call: `anvil_strictCyclingByHash`
+    pub async fn anvil_strict_cycling_by_hash(
+        &self,
+        batches: Vec<Vec<TxHash>>,
+    ) -> Result<CommonAggregationOutput> {
+        node_info!("anvil_strictCyclingByHash");
+        Ok(self
+            .backend
+            .concurrent_proposers_strict_cycling(self.hashes_to_pending(batches)?)
+            .await?)
     }
 
     /// Handler for ETH RPC call: `anvil_cyclingHighest`

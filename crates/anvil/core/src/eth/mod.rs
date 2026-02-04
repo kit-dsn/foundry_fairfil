@@ -194,6 +194,14 @@ pub enum EthRequest {
     CyclingByHash(Vec<Vec<TxHash>>),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_strictCycling", with = "sequence")]
+    StrictCycling(Vec<Vec<Bytes>>),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_strictCyclingByHash", with = "sequence")]
+    StrictCyclingByHash(Vec<Vec<TxHash>>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_cyclingHighest", with = "sequence")]
     CyclingHighest(Vec<Vec<Bytes>>),
 
