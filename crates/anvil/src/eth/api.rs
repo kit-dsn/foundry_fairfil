@@ -4,7 +4,7 @@ use super::{
 };
 use crate::eth::backend::mem::{
     batching::{SimulationExecutionState, build_batch, build_extended_batch},
-    concurrent_proposer::CommonCyclingHighestOutput,
+    concurrent_proposer::CommonAggregationOutput,
     storage::MinedBlockOutcome,
     transaction_register::TransactionRegister,
 };
@@ -299,6 +299,10 @@ impl EthApi {
                 .to_rpc_result(),
             EthRequest::RegisterTransactions(txs) => {
                 self.anvil_register_transactions(txs).await.to_rpc_result()
+            }
+            EthRequest::Cycling(batches) => self.anvil_cycling(batches).await.to_rpc_result(),
+            EthRequest::CyclingByHash(batches) => {
+                self.anvil_cycling_by_hash(batches).await.to_rpc_result()
             }
             EthRequest::CyclingHighest(batches) => {
                 self.anvil_cycling_highest(batches).await.to_rpc_result()
@@ -1462,6 +1466,61 @@ impl EthApi {
         Ok(sims)
     }
 
+    fn bytes_to_pending(batches: Vec<Vec<Bytes>>) -> Result<Vec<Vec<PendingTransaction>>> {
+        let mut parsed_batches: Vec<Vec<PendingTransaction>> = vec![];
+        for batch in batches {
+            let mut parsed_txs = vec![];
+            for tx in batch {
+                // load and parse raw transaction
+                // heavily inspired by send_raw_transaction
+                let mut data = tx.as_ref();
+                if data.is_empty() {
+                    return Err(BlockchainError::EmptyRawTransactionData);
+                }
+
+                let transaction = TypedTransaction::decode_2718(&mut data)
+                    .map_err(|_| BlockchainError::FailedToDecodeSignedTransaction)?;
+
+                parsed_txs.push(PendingTransaction::new(transaction)?);
+            }
+
+            parsed_batches.push(parsed_txs);
+        }
+
+        Ok(parsed_batches)
+    }
+
+    fn hashes_to_pending(&self, batches: Vec<Vec<TxHash>>) -> Result<Vec<Vec<PendingTransaction>>> {
+        let mut parsed_batches: Vec<Vec<PendingTransaction>> = vec![];
+        for batch in batches {
+            let parsed_txs = self
+                .transaction_register
+                .get_raw_transactions(&batch, &self.backend)
+                .ok_or(BlockchainError::TransactionNotFound)?;
+
+            parsed_batches.push(
+                parsed_txs.into_iter().map(|tx| PendingTransaction::new(tx).unwrap()).collect(),
+            );
+        }
+
+        Ok(parsed_batches)
+    }
+
+    /// Handler for ETH RPC call: `anvil_cycling`
+    pub async fn anvil_cycling(&self, batches: Vec<Vec<Bytes>>) -> Result<CommonAggregationOutput> {
+        node_info!("anvil_cycling");
+        Ok(self.backend.concurrent_proposers_cycling(Self::bytes_to_pending(batches)?).await?)
+    }
+
+    /// Handler for ETH RPC call: `anvil_cyclingByHash`
+    pub async fn anvil_cycling_by_hash(
+        &self,
+        batches: Vec<Vec<TxHash>>,
+    ) -> Result<CommonAggregationOutput> {
+        node_info!("anvil_cyclingByHash");
+        Ok(self.backend.concurrent_proposers_cycling(self.hashes_to_pending(batches)?).await?)
+    }
+
     /// Handler for ETH RPC call: `anvil_cyclingHighest`
     pub async fn anvil_cycling_highest(
         &self,
@@ -1516,7 +1575,7 @@ impl EthApi {
     pub async fn anvil_common_cycling_highest(
         &self,
         batches: Vec<Vec<Bytes>>,
-    ) -> Result<CommonCyclingHighestOutput> {
+    ) -> Result<CommonAggregationOutput> {
         node_info!("anvil_commonCyclingHighest");
 
         let mut parsed_batches: Vec<Vec<PendingTransaction>> = vec![];
@@ -1546,7 +1605,7 @@ impl EthApi {
     pub async fn anvil_common_cycling_highest_by_hash(
         &self,
         batches: Vec<Vec<TxHash>>,
-    ) -> Result<CommonCyclingHighestOutput> {
+    ) -> Result<CommonAggregationOutput> {
         node_info!("anvil_commonCyclingHighestByHash");
 
         let mut parsed_batches: Vec<Vec<PendingTransaction>> = vec![];

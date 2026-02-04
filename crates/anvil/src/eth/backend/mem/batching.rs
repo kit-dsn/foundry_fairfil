@@ -402,8 +402,10 @@ impl SimulationExecutionState {
     pub fn execute_transaction(
         &mut self,
         tx: Arc<PendingTransaction>,
-    ) -> Result<ExecResultAndState<ExecutionResult<OpHaltReason>>, TransactionExecutionOutcome>
-    {
+    ) -> Result<
+        (ExecResultAndState<ExecutionResult<OpHaltReason>>, U256),
+        TransactionExecutionOutcome,
+    > {
         let mut inspector = AnvilInspector::default();
 
         let mut evm = new_evm_with_inspector_ref(&self.cache_db, &self.env, &mut inspector);
@@ -437,7 +439,7 @@ impl SimulationExecutionState {
                 self.blob_gas_used =
                     self.blob_gas_used.saturating_add(tx.transaction.blob_gas().unwrap_or(0));
 
-                return Ok(result_state);
+                return Ok((result_state, inspector.gas_fees.unwrap().proposer_reward));
             }
         }
     }
