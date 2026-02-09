@@ -182,6 +182,10 @@ pub enum EthRequest {
     BuildExtendedBatchRestricted(Vec<TxHash>, Vec<TxHash>, Vec<TxHash>, Option<u64>),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_buildUnorderedBatchByHash", with = "sequence")]
+    BuildUnorderedBatch(Vec<TxHash>, Option<u64>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_registerTransactions", with = "sequence")]
     RegisterTransactions(Vec<Bytes>),
 

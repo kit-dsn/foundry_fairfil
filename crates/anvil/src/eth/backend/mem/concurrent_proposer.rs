@@ -140,7 +140,7 @@ impl Backend {
                     let tx_hash: FixedBytes<32> = *tx.hash();
                     let tx_arc = Arc::new(tx.clone());
 
-                    let mut errors = exec_state.check_includability(tx_arc.clone()).await;
+                    let mut errors = exec_state.check_includability(tx_arc.clone());
                     if errors.len() == 0 {
                         // transaction is includable!
                         let (_, tx_reward) =
@@ -294,7 +294,7 @@ impl Backend {
                     let tx_hash = *tx.hash();
                     let tx_arc = Arc::new(tx.clone());
 
-                    let mut errors = exec_state.check_includability(tx_arc.clone()).await;
+                    let mut errors = exec_state.check_includability(tx_arc.clone());
                     if errors.len() == 0 {
                         // transaction is includable!
                         let (_, tx_reward) =
@@ -419,7 +419,7 @@ impl Backend {
                     let tx_hash = *tx.hash();
                     let tx_arc = Arc::new(tx.clone());
 
-                    let mut errors = exec_state.check_includability(tx_arc.clone()).await;
+                    let mut errors = exec_state.check_includability(tx_arc.clone());
                     if errors.len() == 0 {
                         // transaction is includable!
                         let (r, _) = exec_state.execute_transaction(Arc::new(tx.clone())).unwrap();

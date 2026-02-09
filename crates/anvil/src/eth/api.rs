@@ -3,7 +3,10 @@ use super::{
     sign::build_typed_transaction,
 };
 use crate::eth::backend::mem::{
-    batching::{SimulationExecutionState, build_batch, build_extended_batch},
+    batching::{
+        SimulationExecutionState, build_descending_batch, build_unordered_batch,
+        extended_descending_batch,
+    },
     concurrent_proposer::CommonAggregationOutput,
     storage::MinedBlockOutcome,
     transaction_register::TransactionRegister,
@@ -299,6 +302,9 @@ impl EthApi {
                 .to_rpc_result(),
             EthRequest::RegisterTransactions(txs) => {
                 self.anvil_register_transactions(txs).await.to_rpc_result()
+            }
+            EthRequest::BuildUnorderedBatch(hashes, limit) => {
+                self.anvil_build_unordered_batch(hashes, limit).await.to_rpc_result()
             }
             EthRequest::Cycling(batches) => self.anvil_cycling(batches).await.to_rpc_result(),
             EthRequest::CyclingByHash(batches) => {
@@ -1332,9 +1338,13 @@ impl EthApi {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
         }
 
-        let (batch, _) =
-            Box::pin(build_batch(&self.transaction_register, &self.backend, hashes, sim_state))
-                .await;
+        let (batch, _) = Box::pin(build_descending_batch(
+            &self.transaction_register,
+            &self.backend,
+            hashes,
+            sim_state,
+        ))
+        .await;
         Ok(batch)
     }
 
@@ -1353,8 +1363,13 @@ impl EthApi {
 
         let restricted_registry = self.transaction_register.restrict_mempool(&mempool)?;
 
-        let (batch, _) =
-            Box::pin(build_batch(&restricted_registry, &self.backend, hashes, sim_state)).await;
+        let (batch, _) = Box::pin(build_descending_batch(
+            &restricted_registry,
+            &self.backend,
+            hashes,
+            sim_state,
+        ))
+        .await;
         Ok(batch)
     }
 
@@ -1371,11 +1386,15 @@ impl EthApi {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
         }
 
-        let (mut primary_batch, new_sim_state) =
-            Box::pin(build_batch(&self.transaction_register, &self.backend, primary, sim_state))
-                .await;
+        let (mut primary_batch, new_sim_state) = Box::pin(build_descending_batch(
+            &self.transaction_register,
+            &self.backend,
+            primary,
+            sim_state,
+        ))
+        .await;
 
-        let (mut secondary_batch, _) = Box::pin(build_extended_batch(
+        let (mut secondary_batch, _) = Box::pin(extended_descending_batch(
             &self.transaction_register,
             &self.backend,
             secondary,
@@ -1403,10 +1422,15 @@ impl EthApi {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
         }
 
-        let (mut primary_batch, new_sim_state) =
-            Box::pin(build_batch(&restricted_registry, &self.backend, primary, sim_state)).await;
+        let (mut primary_batch, new_sim_state) = Box::pin(build_descending_batch(
+            &restricted_registry,
+            &self.backend,
+            primary,
+            sim_state,
+        ))
+        .await;
 
-        let (mut secondary_batch, _) = Box::pin(build_extended_batch(
+        let (mut secondary_batch, _) = Box::pin(extended_descending_batch(
             &restricted_registry,
             &self.backend,
             secondary,
@@ -1417,6 +1441,28 @@ impl EthApi {
 
         primary_batch.append(&mut secondary_batch);
         Ok(primary_batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildUnorderedBatchByHash`
+    pub async fn anvil_build_unordered_batch(
+        &self,
+        hashes: Vec<TxHash>,
+        limit_option: Option<u64>,
+    ) -> Result<Vec<TxHash>> {
+        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+
+        if let Some(limit) = limit_option {
+            sim_state = Box::new(sim_state.set_gas_limit(limit));
+        }
+
+        let (batch, _) = Box::pin(build_unordered_batch(
+            &self.transaction_register,
+            &self.backend,
+            hashes,
+            sim_state,
+        ))
+        .await;
+        Ok(batch)
     }
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
