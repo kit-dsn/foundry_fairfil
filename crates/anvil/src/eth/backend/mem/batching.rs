@@ -94,7 +94,7 @@ async fn inner_build_unordered_batch(
         };
 
         if sim.errors.len() == 0 {
-            includable.insert(tx_hash, 0);
+            includable.insert(tx_hash, already_included.len());
         } else {
             // this transaction has dependencies that we need to find!
             let (dep_repl, dep_map, s) = Box::pin(find_transaction_depencencies(
@@ -175,7 +175,7 @@ async fn inner_build_unordered_batch(
                     sim_state = Box::new(s);
                 } else {
                     // try finding dependencies again
-                    let (dep_repl, dep_map, s) = find_transaction_depencencies(
+                    let (dep_repl, dep_map, mut s) = find_transaction_depencencies(
                         other_hash,
                         register,
                         backend,
@@ -186,10 +186,17 @@ async fn inner_build_unordered_batch(
                     )
                     .await;
 
-                    dep_repl.into_iter().for_each(|x| {
-                        includable.entry(x).or_insert(batch.len());
+                    // only continue if all of the replacement transactions are indeed includable
+                    let replacement_includable = dep_repl.iter().all(|hash| {
+                        s.check_includability(Arc::new(register.get_pending_tx(hash))).len() == 0
                     });
-                    tx_map = merge_tx_maps(tx_map, dep_map);
+
+                    if replacement_includable {
+                        dep_repl.into_iter().for_each(|x| {
+                            includable.entry(x).or_insert(already_included.len() + batch.len());
+                        });
+                        tx_map = merge_tx_maps(tx_map, dep_map);
+                    }
 
                     sim_state = s;
                 }
@@ -206,66 +213,75 @@ async fn inner_build_unordered_batch(
                     // As a simple heuristic, we can try to include the transaction when it was includable.
 
                     let insert_pos = *includable.get(&winning_tx).unwrap();
-                    let (s, res) = sim_state
-                        .insert_transaction_into_execution(pending_tx.clone(), insert_pos)
-                        .await;
-                    sim_state = Box::new(s);
-
                     includable.remove(&winning_tx);
 
-                    if res.is_ok() {
-                        // the insertion worked!
-                        batch.insert(insert_pos, winning_tx);
-                    }
+                    // only perform this heuristic if the transaction had been successful beforehand,
+                    // and not at the current position
+                    if insert_pos < already_included.len() + batch.len() {
+                        let (s, res) = sim_state
+                            .insert_transaction_into_execution(pending_tx.clone(), insert_pos)
+                            .await;
+                        sim_state = Box::new(s);
 
-                    // check transaction map to now include transaction that have become includable
-                    for other_hash in tx_map.get(&winning_tx).unwrap_or(&Vec::new()).clone() {
-                        if batch.contains(&other_hash) || includable.contains_key(&other_hash) {
-                            // transaction is already included into includable or batch
-                            continue;
+                        if res.is_ok() {
+                            // the insertion worked!
+                            batch.insert(insert_pos - already_included.len(), winning_tx);
                         }
 
-                        if tx_map
-                            .iter()
-                            .filter(|(x, _)| **x != winning_tx)
-                            .any(|(_, list)| list.contains(&other_hash))
-                        {
-                            // there is another transaction map that references other_hash
-                            // so other_hash requires that the another transaction is included into here
-                            // too.
-                            continue;
-                        }
+                        // check transaction map to now include transaction that have become includable
+                        for other_hash in tx_map.get(&winning_tx).unwrap_or(&Vec::new()).clone() {
+                            if batch.contains(&other_hash) || includable.contains_key(&other_hash) {
+                                // transaction is already included into includable or batch
+                                continue;
+                            }
 
-                        // simulate the new transaction again
-                        let (other_sim_res, s) = sim_state
-                            .simulate_transaction(register.get_pending_tx(&other_hash))
-                            .await;
+                            if tx_map
+                                .iter()
+                                .filter(|(x, _)| **x != winning_tx)
+                                .any(|(_, list)| list.contains(&other_hash))
+                            {
+                                // there is another transaction map that references other_hash
+                                // so other_hash requires that the another transaction is included into here
+                                // too.
+                                continue;
+                            }
 
-                        let other_sim = other_sim_res.unwrap();
+                            // simulate the new transaction again
+                            let (other_sim_res, s) = sim_state
+                                .simulate_transaction(register.get_pending_tx(&other_hash))
+                                .await;
 
-                        if other_sim.errors.len() == 0 {
-                            // tx is now includable!
-                            includable.insert(other_hash, already_included.len() + batch.len());
-                            sim_state = Box::new(s);
-                        } else {
-                            // try finding dependencies again
-                            let (dep_repl, dep_map, s) = find_transaction_depencencies(
-                                other_hash,
-                                register,
-                                backend,
-                                Box::new(s),
-                                HashSet::from_iter(
-                                    already_included.iter().cloned().chain(batch.iter().cloned()),
-                                ),
-                            )
-                            .await;
+                            let other_sim = other_sim_res.unwrap();
 
-                            dep_repl.into_iter().for_each(|x| {
-                                includable.entry(x).or_insert(already_included.len() + batch.len());
-                            });
-                            tx_map = merge_tx_maps(tx_map, dep_map);
+                            if other_sim.errors.len() == 0 {
+                                // tx is now includable!
+                                includable.insert(other_hash, already_included.len() + batch.len());
+                                sim_state = Box::new(s);
+                            } else {
+                                // try finding dependencies again
+                                let (dep_repl, dep_map, s) = find_transaction_depencencies(
+                                    other_hash,
+                                    register,
+                                    backend,
+                                    Box::new(s),
+                                    HashSet::from_iter(
+                                        already_included
+                                            .iter()
+                                            .cloned()
+                                            .chain(batch.iter().cloned()),
+                                    ),
+                                )
+                                .await;
 
-                            sim_state = s;
+                                dep_repl.into_iter().for_each(|x| {
+                                    includable
+                                        .entry(x)
+                                        .or_insert(already_included.len() + batch.len());
+                                });
+                                tx_map = merge_tx_maps(tx_map, dep_map);
+
+                                sim_state = s;
+                            }
                         }
                     }
                 }
@@ -735,6 +751,15 @@ impl SimulationExecutionState {
         }
 
         // execute the transaction to insert
+        let mut errors = Self::check_includability_inner(
+            insert_tx.clone(),
+            &self.env,
+            &mut self.cache_db,
+            blob_gas_used,
+            self.blob_gas_limit,
+            gas_used,
+            gas_limit,
+        );
         let (insert_transaction_res, insert_proposer_reward) = {
             let mut inspector = AnvilInspector::default();
             let mut evm = new_evm_with_inspector_ref(&self.cache_db, &self.env, &mut inspector);
@@ -742,6 +767,15 @@ impl SimulationExecutionState {
 
             (evm.transact(insert_tx.to_revm_tx_env()), inspector.gas_fees.unwrap().proposer_reward)
         };
+        if errors.len() > 0 {
+            // transaction is not includable at the position
+            let reverted_state = self.reexecute_tx();
+            let err = errors.remove(0);
+            return (
+                reverted_state,
+                Err(err.into_outcome(Arc::new(PoolTransaction::new((*insert_tx).clone())))),
+            );
+        }
 
         match insert_transaction_res {
             Ok(insert_result_state) => {
@@ -754,6 +788,26 @@ impl SimulationExecutionState {
 
                 // try to include the remaining transactions
                 for i in position..self.executed_tx.len() {
+                    let tx = self.executed_tx[i].clone();
+                    let mut errors = Self::check_includability_inner(
+                        self.executed_tx[i].clone(),
+                        &self.env,
+                        &mut self.cache_db,
+                        blob_gas_used,
+                        self.blob_gas_limit,
+                        gas_used,
+                        gas_limit,
+                    );
+                    if errors.len() > 0 {
+                        // transaction is not includable at the position
+                        let reverted_state = self.reexecute_tx();
+                        let err = errors.remove(0);
+                        return (
+                            reverted_state,
+                            Err(err.into_outcome(Arc::new(PoolTransaction::new((*tx).clone())))),
+                        );
+                    }
+
                     let mut inspector: AnvilInspector = AnvilInspector::default();
                     let mut evm =
                         new_evm_with_inspector_ref(&self.cache_db, &self.env, &mut inspector);
@@ -771,8 +825,6 @@ impl SimulationExecutionState {
                         }
                         Err(e) => {
                             // after inserting, some later transaction fail, so we cannot insert the transaction
-                            let tx = self.executed_tx[i].clone();
-
                             let reverted_state = self.reexecute_tx();
 
                             match e {
@@ -801,6 +853,9 @@ impl SimulationExecutionState {
                     }
                 }
 
+                self.executed_tx = executed_tx;
+                self.gas_used = gas_used;
+                self.blob_gas_used = blob_gas_used;
                 return (self, Ok((insert_result_state, insert_proposer_reward)));
             }
             Err(e) => {
