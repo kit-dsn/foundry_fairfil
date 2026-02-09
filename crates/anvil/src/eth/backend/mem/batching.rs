@@ -47,7 +47,7 @@ pub async fn build_unordered_batch(
     inner_build_unordered_batch(register, backend, bucket, sim_state, &Vec::new()).await
 }
 
-pub async fn extended_descending_batch(
+pub async fn extend_descending_batch(
     register: &TransactionRegister,
     backend: &Backend,
     bucket: Vec<TxHash>,
@@ -55,6 +55,16 @@ pub async fn extended_descending_batch(
     primary_batch: &Vec<TxHash>,
 ) -> (Vec<TxHash>, Box<SimulationExecutionState>) {
     inner_build_descending_batch(register, backend, bucket, sim_state, primary_batch).await
+}
+
+pub async fn extend_unordered_batch(
+    register: &TransactionRegister,
+    backend: &Backend,
+    bucket: Vec<TxHash>,
+    sim_state: Box<SimulationExecutionState>,
+    primary_batch: &Vec<TxHash>,
+) -> (Vec<TxHash>, Box<SimulationExecutionState>) {
+    inner_build_unordered_batch(register, backend, bucket, sim_state, primary_batch).await
 }
 
 async fn inner_build_unordered_batch(
@@ -97,7 +107,7 @@ async fn inner_build_unordered_batch(
             .await;
 
             dep_repl.into_iter().for_each(|tx| {
-                includable.insert(tx, 0);
+                includable.insert(tx, already_included.len());
             });
             tx_map = merge_tx_maps(tx_map, dep_map);
 
@@ -161,7 +171,7 @@ async fn inner_build_unordered_batch(
 
                 if other_sim.errors.len() == 0 {
                     // tx is now includable!
-                    includable.insert(other_hash, batch.len());
+                    includable.insert(other_hash, already_included.len() + batch.len());
                     sim_state = Box::new(s);
                 } else {
                     // try finding dependencies again
@@ -235,7 +245,7 @@ async fn inner_build_unordered_batch(
 
                         if other_sim.errors.len() == 0 {
                             // tx is now includable!
-                            includable.insert(other_hash, batch.len());
+                            includable.insert(other_hash, already_included.len() + batch.len());
                             sim_state = Box::new(s);
                         } else {
                             // try finding dependencies again
@@ -251,7 +261,7 @@ async fn inner_build_unordered_batch(
                             .await;
 
                             dep_repl.into_iter().for_each(|x| {
-                                includable.entry(x).or_insert(batch.len());
+                                includable.entry(x).or_insert(already_included.len() + batch.len());
                             });
                             tx_map = merge_tx_maps(tx_map, dep_map);
 
