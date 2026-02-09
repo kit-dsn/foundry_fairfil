@@ -765,7 +765,9 @@ impl SimulationExecutionState {
             let mut evm = new_evm_with_inspector_ref(&self.cache_db, &self.env, &mut inspector);
             self.env.networks.inject_precompiles(evm.precompiles_mut());
 
-            (evm.transact(insert_tx.to_revm_tx_env()), inspector.gas_fees.unwrap().proposer_reward)
+            let res = evm.transact(insert_tx.to_revm_tx_env());
+
+            (res, inspector.gas_fees.unwrap_or_default().proposer_reward)
         };
         if errors.len() > 0 {
             // transaction is not includable at the position
