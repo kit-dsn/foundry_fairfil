@@ -345,12 +345,7 @@ impl Backend {
             // Simulate the batch
             let (res, e) = {
                 let block_gas_limit = exec_state.gas_limit();
-                exec_state
-                    .simulate_transactions_with_limit(
-                        batch.clone(),
-                        block_gas_limit / (batches.len() as u64) * 5,
-                    )
-                    .await
+                exec_state.simulate_transactions_with_limit(batch.clone(), BATCH_SIZE_LIMIT).await
             };
 
             if let Ok(batch_sim) = res {
