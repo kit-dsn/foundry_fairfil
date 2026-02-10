@@ -1332,7 +1332,9 @@ impl EthApi {
         hashes: Vec<TxHash>,
         limit_option: Option<u64>,
     ) -> Result<Vec<TxHash>> {
-        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
 
         if let Some(limit) = limit_option {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
@@ -1355,7 +1357,9 @@ impl EthApi {
         mempool: Vec<TxHash>,
         limit_option: Option<u64>,
     ) -> Result<Vec<TxHash>> {
-        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
 
         if let Some(limit) = limit_option {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
@@ -1380,7 +1384,9 @@ impl EthApi {
         secondary: Vec<TxHash>,
         limit_option: Option<u64>,
     ) -> Result<Vec<TxHash>> {
-        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
 
         if let Some(limit) = limit_option {
             sim_state = Box::new(sim_state.set_gas_limit(limit));
@@ -1415,7 +1421,9 @@ impl EthApi {
         mempool: Vec<TxHash>,
         limit_option: Option<u64>,
     ) -> Result<Vec<TxHash>> {
-        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
         let restricted_registry = self.transaction_register.restrict_mempool(&mempool)?;
 
         if let Some(limit) = limit_option {
@@ -1454,7 +1462,9 @@ impl EthApi {
             return Ok(vec![]);
         }
 
-        let mut sim_state = Box::new(SimulationExecutionState::new(&self.backend).await?);
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
         let transaction_reg = {
             if let Some(mempool_list) = mempool {
                 Arc::new(self.transaction_register.restrict_mempool(&mempool_list)?)
