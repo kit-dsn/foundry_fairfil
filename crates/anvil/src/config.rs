@@ -202,7 +202,7 @@ pub struct NodeConfig {
     /// Fetch block coinbase from fork
     pub fetch_block_coinbase: bool,
     /// Fetch parentBeaconRoot from fork
-    pub fetch_parent_beacon_root : bool,
+    pub fetch_parent_beacon_root: bool,
     /// Slots in an epoch
     pub slots_in_an_epoch: u64,
     /// The memory limit per EVM execution in bytes.
@@ -1068,7 +1068,6 @@ impl NodeConfig {
         self
     }
 
-
     #[must_use]
     pub fn with_fetch_parent_beacon_root(mut self, yes: bool) -> Self {
         self.fetch_parent_beacon_root = yes;
@@ -1355,11 +1354,28 @@ latest block number: {latest_block}"
             // ensures prevrandao is set
             prevrandao: Some(block.header.mix_hash.unwrap_or_default()),
             gas_limit,
-            // Keep previous `coinbase` and `basefee` value
+            // Keep previous `coinbase`
             beneficiary: env.evm_env.block_env.beneficiary,
-            basefee: env.evm_env.block_env.basefee,
+            basefee: block.header.base_fee_per_gas.unwrap_or_default(),
             ..Default::default()
         };
+
+        // nbeyer: Always update the basefee and blob gas parameters
+        // to match the updated position
+        let fork_next_block = provider
+            .get_block(BlockNumberOrTag::Number(fork_block_number + 1).into())
+            .await
+            .wrap_err("failed to get next fork block")?
+            .unwrap();
+
+        fees.set_base_fee(fork_next_block.header.base_fee_per_gas.unwrap());
+        fees.set_blob_excess_gas_and_price(BlobExcessGasAndPrice::new(
+            fork_next_block.header.excess_blob_gas.unwrap(),
+            get_blob_base_fee_update_fraction(
+                fork_chain_id.unwrap_or_else(|| U256::from(Chain::mainnet().id())).saturating_to(),
+                block.header.timestamp,
+            ),
+        ));
 
         // if not set explicitly we use the base fee of the latest block
         if self.base_fee.is_none() {

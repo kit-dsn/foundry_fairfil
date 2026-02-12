@@ -29,6 +29,102 @@ use crate::eth::{
     pool::transactions::PoolTransaction,
 };
 
+pub async fn find_possible_sequence(
+    register: &TransactionRegister,
+    backend: &Backend,
+    tx: TxHash,
+    sim_state: Box<SimulationExecutionState>,
+) -> Result<(Vec<TxHash>, Box<SimulationExecutionState>), BlockchainError> {
+    let (mut includable, mut tx_map, mut sim_state) =
+        find_transaction_depencencies(tx, register, backend, sim_state, HashSet::new()).await;
+
+    let mut sequence = Vec::new();
+
+    while includable.len() > 0 {
+        let tx_hash = includable.remove(0);
+        let pending_tx = Arc::new(register.get_pending_tx(&tx_hash));
+
+        let tx_errors = sim_state.check_includability(pending_tx.clone());
+        if tx_errors.len() == 0 {
+            let exec_res = sim_state.execute_transaction(pending_tx);
+
+            match exec_res {
+                Ok(_) => {
+                    sequence.push(tx_hash.clone());
+
+                    // check transaction map to now include transaction that have become includable
+                    for other_hash in tx_map.get(&tx_hash).unwrap_or(&Vec::new()).clone() {
+                        if sequence.contains(&other_hash) || includable.contains(&other_hash) {
+                            // transaction is already included into includable or batch
+                            continue;
+                        }
+
+                        if tx_map
+                            .iter()
+                            .filter(|(x, _)| **x != tx_hash)
+                            .any(|(_, list)| list.contains(&other_hash))
+                        {
+                            // there is another transaction map that references other_hash
+                            // so other_hash requires that the another transaction is included into here
+                            // too.
+                            continue;
+                        }
+
+                        // simulate the new transaction again
+                        let (other_sim_res, s) = sim_state
+                            .simulate_transaction(register.get_pending_tx(&other_hash))
+                            .await;
+
+                        let other_sim = other_sim_res.unwrap();
+
+                        if other_sim.errors.len() == 0 {
+                            // tx is now includable!
+                            includable.push(other_hash);
+                            sim_state = Box::new(s);
+                        } else {
+                            // try finding dependencies again
+                            let (dep_repl, dep_map, mut s) = find_transaction_depencencies(
+                                other_hash,
+                                register,
+                                backend,
+                                Box::new(s),
+                                HashSet::from_iter(sequence.iter().cloned()),
+                            )
+                            .await;
+
+                            // only continue if all of the replacement transactions are indeed includable
+                            let replacement_includable = dep_repl.iter().all(|hash| {
+                                s.check_includability(Arc::new(register.get_pending_tx(hash))).len()
+                                    == 0
+                            });
+
+                            if replacement_includable {
+                                dep_repl.into_iter().for_each(|x| includable.push(x));
+                                tx_map = merge_tx_maps(tx_map, dep_map);
+                            }
+
+                            sim_state = s;
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(BlockchainError::Message(format!(
+                        "can not execute transaction {}: {:?}",
+                        tx_hash, e
+                    )));
+                }
+            }
+        } else {
+            return Err(BlockchainError::Message(format!(
+                "transaction {} has errors: {:?}",
+                tx_hash, tx_errors
+            )));
+        }
+    }
+
+    Ok((sequence, sim_state))
+}
+
 pub async fn build_descending_batch(
     register: &TransactionRegister,
     backend: &Backend,

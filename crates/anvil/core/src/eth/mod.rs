@@ -158,12 +158,20 @@ pub enum EthRequest {
     AnvilAddTransaction(Bytes),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_addBlockByHash", with = "sequence")]
+    AddBlockByHash(Vec<TxHash>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_simulateTransaction", with = "sequence")]
     SimulateTransaction(Vec<Bytes>),
 
     /// non-standard endpoint
     #[serde(rename = "anvil_simulateTransactionByHash", with = "sequence")]
     SimulateTransactionByHash(Vec<TxHash>),
+
+    /// non-standard endpoint
+    #[serde(rename = "anvil_findSequence", with = "sequence")]
+    FindSequenceByHash(TxHash),
 
     /// non-standard endpoint
     #[serde(rename = "anvil_buildBatchByHash", with = "sequence")]

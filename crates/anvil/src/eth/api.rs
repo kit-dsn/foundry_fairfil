@@ -5,7 +5,7 @@ use super::{
 use crate::eth::backend::mem::{
     batching::{
         SimulationExecutionState, build_descending_batch, build_unordered_batch,
-        extend_descending_batch, extend_unordered_batch,
+        extend_descending_batch, extend_unordered_batch, find_possible_sequence,
     },
     concurrent_proposer::CommonAggregationOutput,
     storage::MinedBlockOutcome,
@@ -281,11 +281,17 @@ impl EthApi {
             EthRequest::AnvilAddTransaction(tx) => {
                 self.anvil_add_transaction(tx).await.to_rpc_result()
             }
+            EthRequest::AddBlockByHash(txs) => {
+                self.anvil_add_block_by_hashes(txs).await.to_rpc_result()
+            }
             EthRequest::SimulateTransaction(txs) => {
                 self.anvil_simulate_transaction(txs).await.to_rpc_result()
             }
             EthRequest::SimulateTransactionByHash(hashes) => {
                 self.anvil_simulate_transaction_by_hashes(hashes).await.to_rpc_result()
+            }
+            EthRequest::FindSequenceByHash(hash) => {
+                self.anvil_find_sequence(hash).await.to_rpc_result()
             }
             EthRequest::BuildBatch(hashes, limit) => {
                 self.anvil_build_batch(hashes, limit).await.to_rpc_result()
@@ -1265,6 +1271,23 @@ impl EthApi {
     /// at the desired position
     ///
     /// Handler for ETH RPC call: `anvil_addTx`
+    pub async fn anvil_add_block_by_hashes(&self, tx: Vec<TxHash>) -> Result<MinedBlockOutcome> {
+        node_info!("anvil_addBlockByHash");
+        let txs = self.hashes_to_pending(vec![tx])?.pop().unwrap();
+
+        let mined_block_outcome: MinedBlockOutcome = self
+            .backend
+            .mine_block(txs.into_iter().map(|t| Arc::new(PoolTransaction::new(t))).collect())
+            .await;
+
+        Ok(mined_block_outcome)
+    }
+
+    /// Adds a TX directly to the ready_transactions pool
+    /// so that the transaction will end up in the block
+    /// at the desired position
+    ///
+    /// Handler for ETH RPC call: `anvil_addTx`
     pub async fn anvil_add_transaction(&self, tx: Bytes) -> Result<TxHash> {
         node_info!("anvil_addTx");
         // heavily inspired by send_raw_transaction
@@ -1506,6 +1529,26 @@ impl EthApi {
             batch.append(&mut secondary_included);
         }
         Ok(batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_findSequence`
+    pub async fn anvil_find_sequence(
+        &self,
+        tx: TxHash,
+    ) -> Result<Vec<TransactionAccessSimulationResult>> {
+        node_info!("anvil_findSequence");
+
+        let (sequence, _) = find_possible_sequence(
+            &self.transaction_register,
+            &self.backend,
+            tx,
+            Box::new(
+                SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+            ),
+        )
+        .await?;
+
+        return self.anvil_simulate_transaction_by_hashes(sequence).await;
     }
 
     /// Handler for ETH RPC call: `anvil_simulateTransaction`
