@@ -455,8 +455,6 @@ impl Backend {
                 .map(|sim| sim.priority_fee)
                 .fold(U256::ZERO, |acc, v| acc.saturating_add(v));
 
-            println!("[DEBUG] total prio fees: {}", total_prio_fees);
-
             // priority fees are distributed based on the gas used in their
             // batches. All batches do have a batch gas limit, so that in theory
             // all batch proposer can (and should) be able to fill their batches.
