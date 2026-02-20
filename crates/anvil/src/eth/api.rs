@@ -312,6 +312,9 @@ impl EthApi {
             EthRequest::BuildUnorderedBatch(hashes, mempool, limit) => {
                 self.anvil_build_unordered_batch(hashes, mempool, limit).await.to_rpc_result()
             }
+            EthRequest::BuildOrderedBatch(hashes, mempool, limit) => {
+                self.anvil_build_ordered_batch(hashes, mempool, limit).await.to_rpc_result()
+            }
             EthRequest::Cycling(batches) => self.anvil_cycling(batches).await.to_rpc_result(),
             EthRequest::CyclingByHash(batches) => {
                 self.anvil_cycling_by_hash(batches).await.to_rpc_result()
@@ -1517,6 +1520,63 @@ impl EthApi {
         // continue filling up the batch with transactions from the remaining buckets
         for bucket in buckets {
             let (mut secondary_included, s) = Box::pin(extend_unordered_batch(
+                &transaction_reg,
+                &self.backend,
+                bucket,
+                sim_state,
+                &batch,
+            ))
+            .await;
+
+            sim_state = s;
+            batch.append(&mut secondary_included);
+        }
+        Ok(batch)
+    }
+
+    /// Handler for ETH RPC call: `anvil_buildUnorderedBatchByHash`
+    pub async fn anvil_build_ordered_batch(
+        &self,
+        mut buckets: Vec<Vec<TxHash>>,
+        mempool: Option<Vec<TxHash>>,
+        limit_option: Option<u64>,
+    ) -> Result<Vec<TxHash>> {
+        if buckets.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut sim_state = Box::new(
+            SimulationExecutionState::new(&self.backend).await?.disable_priority_fee_transfer(),
+        );
+        let transaction_reg = {
+            if let Some(mempool_list) = mempool {
+                Arc::new(self.transaction_register.restrict_mempool(&mempool_list)?)
+            } else {
+                self.transaction_register.clone()
+            }
+        };
+
+        if let Some(limit) = limit_option {
+            sim_state = Box::new(sim_state.set_gas_limit(limit));
+        }
+
+        // build primary batch with the transactions in the first bucket
+        let mut batch = {
+            let (primary_batch, s) = Box::pin(build_descending_batch(
+                &transaction_reg,
+                &self.backend,
+                buckets.remove(0),
+                sim_state,
+            ))
+            .await;
+
+            sim_state = s;
+            primary_batch
+        };
+
+        // continue filling up the batch with transactions from the remaining buckets
+        for bucket in buckets {
+            let (mut secondary_included, s) = Box::pin(extend_descending_batch(
                 &transaction_reg,
                 &self.backend,
                 bucket,

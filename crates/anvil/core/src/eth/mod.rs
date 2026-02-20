@@ -190,6 +190,10 @@ pub enum EthRequest {
     BuildExtendedBatchRestricted(Vec<TxHash>, Vec<TxHash>, Vec<TxHash>, Option<u64>),
 
     /// non-standard endpoint
+    #[serde(rename = "anvil_buildOrderedBatchByHash", with = "sequence")]
+    BuildOrderedBatch(Vec<Vec<TxHash>>, Option<Vec<TxHash>>, Option<u64>),
+
+    /// non-standard endpoint
     #[serde(rename = "anvil_buildUnorderedBatchByHash", with = "sequence")]
     BuildUnorderedBatch(Vec<Vec<TxHash>>, Option<Vec<TxHash>>, Option<u64>),
 
