@@ -341,6 +341,8 @@ impl Backend {
             SimulationExecutionState::new(&self).await?.disable_priority_fee_transfer();
 
         // ensure that all batches are valid, i.e., executable
+        let mut batch_gas_usages = vec![0 as u64; batches.len()];
+
         for (batch_idx, batch) in batches.iter().enumerate() {
             // Simulate the batch
             let (res, e) = {
@@ -352,6 +354,9 @@ impl Backend {
                 if batch_sim.iter().any(|s| s.errors.len() > 0) {
                     return Err(BlockchainError::Message(format!("batch {} invalid", batch_idx)));
                 }
+
+                // calculate the gas usage of each batch based on the individual execution
+                batch_gas_usages[batch_idx] = batch_sim.iter().map(|s| s.gas_used).sum::<u64>();
             }
 
             exec_state = e; // simulate_transaction takes ownership and returns exec state
@@ -361,13 +366,12 @@ impl Backend {
         let mut block: Vec<Arc<PoolTransaction>> = vec![];
         // map of all seen transactions and the amount of gas used
         let mut seen_txs: HashMap<FixedBytes<32>, u64> = HashMap::new();
-        let mut gas_contributed = vec![0 as u64; batches.len()];
 
         let mut failing_transactions: Vec<(FixedBytes<32>, TransactionExecutionOutcome)> = vec![];
 
         loop {
             // in all batches, remove all transactions that are already included into the block
-            batches.iter_mut().enumerate().for_each(|(batch_idx, batch)| {
+            batches.iter_mut().for_each(|batch| {
                 let mut split_idx = batch.len();
                 for (idx, tx) in batch.iter().enumerate() {
                     if !seen_txs.contains_key(tx.hash()) {
@@ -375,10 +379,6 @@ impl Backend {
                         // remove the previous transactions from the batch
                         split_idx = idx;
                         break;
-                    } else {
-                        // the transaction is alredy included, batch proposer gets the gas used attributed
-                        gas_contributed[batch_idx] = gas_contributed[batch_idx]
-                            .saturating_add(*seen_txs.get(tx.hash()).unwrap());
                     }
                 }
                 if split_idx == batch.len() {
@@ -411,24 +411,6 @@ impl Backend {
                         let tx_gas_used = r.result.gas_used();
                         block.push(Arc::new(PoolTransaction::new(tx.clone())));
                         seen_txs.insert(tx_hash, tx_gas_used);
-
-                        // attribute all proposers whose head transaction is the executed transaction
-                        // with the amount of gas contibuted
-                        batches
-                            .iter()
-                            .enumerate()
-                            .map(|(batch_idx, batch)| (batch_idx, batch.get(0)))
-                            .filter(|(_, opt_head)| {
-                                if let Some(head) = opt_head {
-                                    *head.hash() == tx_hash
-                                } else {
-                                    false
-                                }
-                            })
-                            .for_each(|(batch_idx, _)| {
-                                gas_contributed[batch_idx] =
-                                    gas_contributed[batch_idx].saturating_add(tx_gas_used);
-                            });
                     } else {
                         // transaction is not includable
                         // shortcut: mark as 'seen' with gas usage 0
@@ -466,12 +448,6 @@ impl Backend {
         // actually build the new block
         let mined_block_outcome = self.do_mine_block(block).await;
 
-        // build hashmap of gas_usage
-        let mut gas_usage_per_batch = HashMap::new();
-        gas_contributed.iter().enumerate().for_each(|(batch_idx, gas)| {
-            gas_usage_per_batch.insert(batch_idx, *gas as u128);
-        });
-
         let prio_fee_per_batch: Vec<U256> = {
             // calculate total priority fees
             let total_prio_fees = block_simulation
@@ -479,12 +455,12 @@ impl Backend {
                 .map(|sim| sim.priority_fee)
                 .fold(U256::ZERO, |acc, v| acc.saturating_add(v));
 
-            // let gas_contributed_cap = (2 * exec_state.gas_limit()) / (batches.len() as u64);
-            // let contrib: Vec<u64> =
-            //     gas_contributed.iter().map(|gas| (*gas).min(gas_contributed_cap)).collect();
+            println!("[DEBUG] total prio fees: {}", total_prio_fees);
 
-            let contrib = gas_contributed;
-
+            // priority fees are distributed based on the gas used in their
+            // batches. All batches do have a batch gas limit, so that in theory
+            // all batch proposer can (and should) be able to fill their batches.
+            let contrib = batch_gas_usages;
             let contrib_sum: u64 = contrib.iter().sum();
 
             contrib
