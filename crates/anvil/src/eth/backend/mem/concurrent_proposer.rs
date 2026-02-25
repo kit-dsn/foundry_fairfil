@@ -461,15 +461,19 @@ impl Backend {
             let contrib = batch_gas_usages;
             let contrib_sum: u64 = contrib.iter().sum();
 
-            contrib
-                .iter()
-                .map(|contributed| {
-                    total_prio_fees
-                        .checked_mul(U256::from(*contributed))
-                        .unwrap()
-                        .wrapping_div(U256::from(contrib_sum))
-                })
-                .collect()
+            if contrib_sum == 0 {
+                vec![U256::from(0);contrib.len()]
+            } else {
+                contrib
+                    .iter()
+                    .map(|contributed| {
+                        total_prio_fees
+                            .checked_mul(U256::from(*contributed))
+                            .unwrap()
+                            .wrapping_div(U256::from(contrib_sum))
+                    })
+                    .collect()
+            }
         };
 
         Ok(CommonAggregationOutput {
